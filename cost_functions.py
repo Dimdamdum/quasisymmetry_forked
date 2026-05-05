@@ -31,7 +31,6 @@ def commutator_cost_thermal(H: of.FermionOperator,
             total_commutator_norm += trace_with_thermal_state(comm, thermal_pops)
         return total_commutator_norm
 
-    raise NotImplementedError()
     return f
 
 

@@ -108,8 +108,14 @@ if __name__=="__main__":
     parser.add_argument("initialguesses",
                         help="path to file with initial guesses (one line = one point)")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--reference",
+                        help="reference state to use in calculations (default: fci)",
+                        default="fci")
 
     args = parser.parse_args()
+
+    start_time = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+
     mol = of.MolecularData(filename=args.molpath)
 
     print("a, b, c are the same for all orbitals")
@@ -137,15 +143,35 @@ if __name__=="__main__":
         H_ferm, num_electrons=mol.n_electrons,
         num_qubits=mol.n_orbitals * 2
     ).todense()
-    _, psi_fci_number = spla.eigsh(H_number, which="SA", k=1)
 
-    f, m = commutator_cost_number_pres(H_number,
-                                       psi_fci_number,
-                                       mol.n_electrons,
-                                       mol.n_orbitals)
+    if args.reference == "fci":
 
-    gamma_a, gamma_b, gamma_ab = compute_spin_rdms_from_statevector(
-        psi_full, mol.n_orbitals)
+        _, psi_fci_number = spla.eigsh(H_number, which="SA", k=1)
+
+        f, m = commutator_cost_number_pres(H_number,
+                                           psi_fci_number,
+                                           mol.n_electrons,
+                                           mol.n_orbitals)
+
+        gamma_a, gamma_b, gamma_ab = compute_spin_rdms_from_statevector(
+            psi_full, mol.n_orbitals)
+    elif args.reference == "hf":
+        psi_hf = np.zeros(H_number.shape[0])
+        psi_hf[0] = 1.
+        psi_hf_full = np.zeros(2**(2 * mol.n_orbitals), dtype=np.complex128)
+        psi_hf_full[basis_idx] = psi_hf
+
+        f, m = commutator_cost_number_pres(H_number,
+                                           psi_hf,
+                                           mol.n_electrons,
+                                           mol.n_orbitals)
+
+        gamma_a, gamma_b, gamma_ab = compute_spin_rdms_from_statevector(
+            psi_hf_full, mol.n_orbitals)
+    else:
+        raise ValueError("args.reference must be 'fci' or 'hf'")
+
+
     pairs = list(combinations(range(mol.n_orbitals), 2))
 
     initial_guesses = np.loadtxt(args.initialguesses)
@@ -155,11 +181,20 @@ if __name__=="__main__":
     fieldnames = ["E_FCI", "V_0", "V_optimized",
      "Sum_CommSq_0", "Sum_CommSq_Optimized", "a_opt", "b_opt", "c_opt"]
 
-    with open(mol.description + "_"
-                  + args.initialguesses + "_comm_opt_data.txt",
+    data_filename = (mol.description + "_"
+                     + time.strftime("%Y%m%d_%H%M%S", time.localtime())
+                     + "_comm_opt_data.txt")
+
+    xs_filename = (mol.description + "_"
+                     + time.strftime("%Y%m%d_%H%M%S", time.localtime())
+                     + "_x_comm_opt.txt")
+
+    with open(data_filename,
               "a", newline="") as fp:
-        writer = csv.DictWriter(fp, fieldnames=fieldnames)
-        writer.writeheader()
+        fp.write(str(vars(args)) + "\n")
+        # writer = csv.DictWriter(fp, fieldnames=fieldnames)
+        # writer.writeheader()
+        fp.write(" ".join(fieldnames) + "\n")
 
     for i in range(n_points):
         x_0 = initial_guesses[i, :]
@@ -186,10 +221,8 @@ if __name__=="__main__":
         out_row = np.array([E_fci, variance_before, variance_after,
                                f(x_0), f(res.x), 1, b_opt / a_opt, c_opt / a_opt])
 
-        with open(mol.description + "_"
-                  + args.initialguesses + "_x_comm_opt.txt", "ab") as fp:
+        with open(xs_filename, "ab") as fp:
             np.savetxt(fp, res.x.reshape(1, res.x.shape[0]))
 
-        with open(mol.description + "_"
-                  + args.initialguesses + "_comm_opt_data.txt", "ab") as fp:
+        with open(data_filename, "ab") as fp:
             np.savetxt(fp, out_row.reshape(1, out_row.shape[0]))
