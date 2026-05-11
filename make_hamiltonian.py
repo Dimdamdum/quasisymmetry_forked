@@ -12,10 +12,16 @@ if __name__=="__main__":
                         help="one of the following: lih, h2o, h4_linear, h4_square, h4_rectangle, h2")
     parser.add_argument("bond", type=float, help="bond")
     parser.add_argument("--basis", default="sto-3g")
+    parser.add_argument("--mol_parameter_2", type=float,
+                        help="Additional geometry parameter of the molecule (if any)")
 
     args = parser.parse_args()
 
-    geometry, description = get_geometry_and_description(args.mol, args.bond)
+    if args.mol=="h2o":
+        geometry, description = get_geometry_and_description(args.mol, args.bond,
+                                                             hoh_angle_deg=args.mol_parameter_2)
+    else:
+        geometry, description = get_geometry_and_description(args.mol, args.bond)
 
     path = Path("hamiltonians")
     abspath = str(path.absolute())

@@ -144,7 +144,7 @@ def get_geometry_and_description(molecule: str, x: float, **kwargs):
 
     elif mol == "h2o":
         angle = kwargs.get("hoh_angle_deg", 104.5)
-        return build_h2o_geometry(x, hoh_angle_deg=angle), f"H2O_OH{x:.4f}"
+        return build_h2o_geometry(x, hoh_angle_deg=angle), f"H2O_OH{x:.4f}_{angle:.4f}"
 
     elif mol == "h4_linear":
         return build_h4_linear_geometry(x), f"H4_linear_d{x:.4f}"
