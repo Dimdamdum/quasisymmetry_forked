@@ -2,7 +2,15 @@ Optimizing quasisymmetries for quantum subspace expansion
 
 Linjun Wang, Alexey Uvarov
 
-Current workflow:
+New workflow (using ffsim):
+
+1. make_pyscf_hamiltonian
+2. generate_guesses
+3. optimize
+4. xs_to_costs
+
+
+Previous workflow:
 
 1. make_hamiltonian
 2. generate_init_guesses

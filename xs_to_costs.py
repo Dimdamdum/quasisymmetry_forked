@@ -42,7 +42,7 @@ if __name__=="__main__":
         c_opt = np.cos(phi1)
         costs_and_bc = np.array([variance_fci(x), variance_hf(x),
                                  commutator_fci(x), commutator_hf(x),
-                                 b_opt / a_opt, c_opt / a_opt])
+                                 b_opt / a_opt, c_opt / a_opt]).real
         print(costs_and_bc)
 
         with open(data_filename, "ab") as fp:
