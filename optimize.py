@@ -15,86 +15,129 @@ def callback(intermediate_result):
     print(time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime()))
 
 
-def commutator_cost_fci(moldata: ffsim.MolecularData) -> Callable:
+# def commutator_cost_fci(moldata: ffsim.MolecularData) -> Callable:
+#     h_linop = ffsim.linear_operator(moldata.hamiltonian,
+#                                     norb=moldata.norb,
+#                                     nelec=moldata.nelec)
+#     fci_energy, fci_state = scipy.sparse.linalg.eigsh(h_linop, which="SA", k=1)
+#
+#     iu = np.triu_indices(moldata.norb, k=1)
+#
+#     def f(x):
+#         a = np.sin(x[-2]) * np.cos(x[-1])
+#         b = np.sin(x[-2]) * np.sin(x[-1])
+#         c = np.cos(x[-2])
+#         ops = []
+#         for i in range(moldata.norb):
+#             op = ffsim.FermionOperator(
+#                 {
+#                     (ffsim.cre_a(i), ffsim.des_a(i)): a,
+#                     (ffsim.cre_b(i), ffsim.des_b(i)): b,
+#                     (ffsim.cre_a(i), ffsim.des_a(i), ffsim.cre_b(i), ffsim.des_b(i)): c
+#                 }
+#             )
+#             ops.append(op)
+#         linops = [ffsim.linear_operator(op, moldata.norb, moldata.nelec) for op in ops]
+#         rotation_generator = np.zeros((moldata.norb, moldata.norb))
+#         rotation_generator[iu] = x[:-2]
+#         rotation_generator -= rotation_generator.T
+#         U = scipy.linalg.expm(rotation_generator)
+#         # u_psi = ffsim.apply_orbital_rotation(fci_state, U, moldata.norb, moldata.nelec)
+#         # s_u_psis = [linop @ u_psi for linop in linops]
+#         # udag_s_u_psis = [ffsim.apply_orbital_rotation(psi, U.T.conj(), moldata.norb, moldata.nelec)
+#         #                     for psi in s_u_psis]
+#         # final_states = [h_linop @ psi - fci_energy * psi for psi in udag_s_u_psis]
+#         h_psi = h_linop @ fci_state
+#         u_h_psi = ffsim.apply_orbital_rotation(h_psi, U,
+#                                                moldata.norb, moldata.nelec)
+#         symmetry_u_h_psis = [linop @ u_h_psi for linop in linops]
+#         udag_s_u_h_psis = [ffsim.apply_orbital_rotation(psi, U.T.conj(),
+#                                                         moldata.norb, moldata.nelec)
+#                            for psi in symmetry_u_h_psis]
+#         final_states = [h_linop @ udag_s_u_psis[i] - udag_s_u_h_psis[i]
+#                         for i in range(len(udag_s_u_psis))]
+#         return np.sum([np.linalg.norm(psi) ** 2 for psi in final_states])
+#
+#     # xdim = iu[0].shape[0] + 2
+#
+#     return f
+
+#
+# def commutator_cost_hf(moldata: ffsim.MolecularData) -> Callable:
+#     h_linop = ffsim.linear_operator(moldata.hamiltonian,
+#                                     norb=moldata.norb,
+#                                     nelec=moldata.nelec)
+#     psi = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
+#
+#     iu = np.triu_indices(moldata.norb, k=1)
+#
+#     def f(x):
+#         linops = make_quasiymmetries(x, moldata.norb, moldata.nelec)
+#
+#         rotation_generator = np.zeros((moldata.norb, moldata.norb))
+#         rotation_generator[iu] = x[:-2]
+#         rotation_generator -= rotation_generator.T
+#         U = scipy.linalg.expm(rotation_generator)
+#
+#         u_psi = ffsim.apply_orbital_rotation(psi, U, moldata.norb, moldata.nelec)
+#         s_u_psis = [linop @ u_psi for linop in linops]
+#         udag_s_u_psis = [ffsim.apply_orbital_rotation(psi, U.T.conj(),
+#                                                      moldata.norb, moldata.nelec)
+#                             for psi in s_u_psis]
+#
+#         h_psi = h_linop @ hf_state
+#         u_h_psi = ffsim.apply_orbital_rotation(h_psi, U,
+#                                                moldata.norb, moldata.nelec)
+#         symmetry_u_h_psis = [linop @ u_h_psi for linop in linops]
+#         udag_s_u_h_psis = [ffsim.apply_orbital_rotation(psi, U.T.conj(),
+#                                                      moldata.norb, moldata.nelec)
+#                             for psi in symmetry_u_h_psis]
+#         final_states = [h_linop @ udag_s_u_psis[i] -  udag_s_u_h_psis[i]
+#                         for i in range(len(udag_s_u_psis))]
+#         return np.sum([np.linalg.norm(psi) ** 2 for psi in final_states])
+#
+#     # xdim = iu[0].shape[0] + 2
+#
+#     return f
+
+
+def commutator_cost(moldata: ffsim.MolecularData, reference="fci") -> Callable:
     h_linop = ffsim.linear_operator(moldata.hamiltonian,
                                     norb=moldata.norb,
                                     nelec=moldata.nelec)
-    fci_energy, fci_state = scipy.sparse.linalg.eigsh(h_linop, which="SA", k=1)
+
+    if reference == "fci":
+        _, ref_state = scipy.sparse.linalg.eigsh(h_linop, which="SA", k=1)
+    elif reference == "hf":
+        ref_state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
+    else:
+        raise ValueError("reference can be 'fci' or 'hf'")
 
     iu = np.triu_indices(moldata.norb, k=1)
 
     def f(x):
-        a = np.sin(x[-2]) * np.cos(x[-1])
-        b = np.sin(x[-2]) * np.sin(x[-1])
-        c = np.cos(x[-2])
-        ops = []
-        for i in range(moldata.norb):
-            op = ffsim.FermionOperator(
-                {
-                    (ffsim.cre_a(i), ffsim.des_a(i)): a,
-                    (ffsim.cre_b(i), ffsim.des_b(i)): b,
-                    (ffsim.cre_a(i), ffsim.des_a(i), ffsim.cre_b(i), ffsim.des_b(i)): c
-                }
-            )
-            ops.append(op)
-        linops = [ffsim.linear_operator(op, moldata.norb, moldata.nelec) for op in ops]
+        linops = make_quasiymmetries(x, moldata.norb, moldata.nelec)
+
         rotation_generator = np.zeros((moldata.norb, moldata.norb))
         rotation_generator[iu] = x[:-2]
         rotation_generator -= rotation_generator.T
         U = scipy.linalg.expm(rotation_generator)
-        rotated_psi = ffsim.apply_orbital_rotation(fci_state, U, moldata.norb, moldata.nelec)
-        states_after_s_i = [linop @ rotated_psi for linop in linops]
-        unrotated_states = [ffsim.apply_orbital_rotation(psi, U.T.conj(), moldata.norb, moldata.nelec)
-                            for psi in states_after_s_i]
-        final_states = [h_linop @ psi - fci_energy * psi for psi in unrotated_states]
-        return np.sum([np.linalg.norm(psi) ** 2 for psi in final_states])
 
-    # xdim = iu[0].shape[0] + 2
-
-    return f
-
-
-def commutator_cost_hf(moldata: ffsim.MolecularData) -> Callable:
-    h_linop = ffsim.linear_operator(moldata.hamiltonian,
-                                    norb=moldata.norb,
-                                    nelec=moldata.nelec)
-    hf_state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
-
-    iu = np.triu_indices(moldata.norb, k=1)
-
-    def f(x):
-        a = np.sin(x[-2]) * np.cos(x[-1])
-        b = np.sin(x[-2]) * np.sin(x[-1])
-        c = np.cos(x[-2])
-        ops = []
-        for i in range(moldata.norb):
-            op = ffsim.FermionOperator(
-                {
-                    (ffsim.cre_a(i), ffsim.des_a(i)): a,
-                    (ffsim.cre_b(i), ffsim.des_b(i)): b,
-                    (ffsim.cre_a(i), ffsim.des_a(i), ffsim.cre_b(i), ffsim.des_b(i)): c
-                }
-            )
-            ops.append(op)
-        linops = [ffsim.linear_operator(op, moldata.norb, moldata.nelec) for op in ops]
-        rotation_generator = np.zeros((moldata.norb, moldata.norb))
-        rotation_generator[iu] = x[:-2]
-        rotation_generator -= rotation_generator.T
-        U = scipy.linalg.expm(rotation_generator)
-        rotated_psi = ffsim.apply_orbital_rotation(hf_state, U, moldata.norb, moldata.nelec)
-        states_after_s_i = [linop @ rotated_psi for linop in linops]
-        udag_s_u_psi = [ffsim.apply_orbital_rotation(psi, U.T.conj(),
+        u_psi = ffsim.apply_orbital_rotation(ref_state, U, moldata.norb, moldata.nelec)
+        s_u_psis = [linop @ u_psi for linop in linops]
+        udag_s_u_psis = [ffsim.apply_orbital_rotation(psi, U.T.conj(),
                                                      moldata.norb, moldata.nelec)
-                            for psi in states_after_s_i]
+                            for psi in s_u_psis]
+        h_psi = h_linop @ ref_state
 
-        h_psi = h_linop @ hf_state
         u_h_psi = ffsim.apply_orbital_rotation(h_psi, U,
                                                moldata.norb, moldata.nelec)
-        symmetry_u_h_psi = [linop @ u_h_psi for linop in linops]
-        udag_s_u_h_psi = [ffsim.apply_orbital_rotation(psi, U.T.conj(),
+        symmetry_u_h_psis = [linop @ u_h_psi for linop in linops]
+        udag_s_u_h_psis = [ffsim.apply_orbital_rotation(psi, U.T.conj(),
                                                      moldata.norb, moldata.nelec)
-                            for psi in symmetry_u_h_psi]
-        final_states = [h_linop @ psi -  udag_s_u_h_psi for psi in udag_s_u_psi]
+                            for psi in symmetry_u_h_psis]
+        final_states = [h_linop @ udag_s_u_psis[i] -  udag_s_u_h_psis[i]
+                        for i in range(len(udag_s_u_psis))]
         return np.sum([np.linalg.norm(psi) ** 2 for psi in final_states])
 
     # xdim = iu[0].shape[0] + 2
@@ -181,7 +224,14 @@ if __name__=="__main__":
         fp.write(str(vars(args)) + "\n")
 
     if args.cost_function == "commutator":
-        f = commutator_cost_fci(moldata)
+        if args.reference == "fci":
+            # f = commutator_cost_fci(moldata)
+            f = commutator_cost(moldata, "fci")
+        elif args.reference == "hf":
+            # f = commutator_cost_hf(moldata)
+            f = commutator_cost(moldata, "hf")
+        else:
+            raise ValueError()
     else:
         raise NotImplementedError()
 

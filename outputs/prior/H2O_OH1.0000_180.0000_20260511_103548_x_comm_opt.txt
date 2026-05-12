@@ -1,0 +1,1 @@
+{'molpath': 'hamiltonians/H2-O1_sto-3g_singlet_H2O_OH1.0000_180.0000.hdf5', 'initialguesses': 'x0_h2o_1.0_perturb_all_0.txt', 'verbose': False, 'reference': 'fci'}

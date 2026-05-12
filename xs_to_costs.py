@@ -3,7 +3,7 @@ import pyscf
 import ffsim
 import numpy as np
 
-from optimize import commutator_cost_fci, commutator_cost_hf, variance_cost
+from optimize import commutator_cost, variance_cost
 
 
 if __name__=="__main__":
@@ -19,8 +19,8 @@ if __name__=="__main__":
     mf.update_from_chk(args.molpath)
     moldata = ffsim.MolecularData.from_scf(mf)
 
-    commutator_fci = commutator_cost_fci(moldata)
-    commutator_hf = commutator_cost_hf(moldata)
+    commutator_fci = commutator_cost(moldata, "fci")
+    commutator_hf = commutator_cost(moldata, "hf")
     variance_fci = variance_cost(moldata, "fci")
     variance_hf = variance_cost(moldata, "hf")
 
