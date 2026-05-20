@@ -40,15 +40,25 @@ def sector_partitioning_metrics(moldata: ffsim.MolecularData,
         for orbital in range(moldata.norb):
             total_projector *= all_projector_sets[orbital][w[orbital]]
         total_projector_linop = ffsim.linear_operator(total_projector, moldata.norb, moldata.nelec)
-        dimension = trace_of_a_diagonal_projector(total_projector_linop)
+        v = np.ones(total_projector_linop.shape[0])
+        support_mask = (total_projector_linop @ v).real
+        dimension = int(np.sum(support_mask))
         if dimension == 0:
             continue
         print(w)
 
-        projected_h = total_projector_linop @ rotated_h_linop @ total_projector_linop
-        sector_es, sector_vs = scipy.sparse.linalg.eigsh(projected_h, k=dimension, which="SA")
-        nonzero_eig_indices = np.where(sector_es < -1e-6)[0]
-        projected_eigenvectors.append((sector_es[nonzero_eig_indices], sector_vs[:, nonzero_eig_indices]))
+        support = np.where(support_mask == 1)[0]
+
+        h_sub = subspace_matrix(rotated_h_linop, support)
+        sector_es, sector_vs_small = np.linalg.eigh(h_sub)
+        sector_vs_big = np.zeros((rotated_h_linop.shape[0], dimension), dtype="complex")
+        for j in range(dimension):
+            sector_vs_big[support, j] = sector_vs_small[:, j]
+
+        # projected_h = total_projector_linop @ rotated_h_linop @ total_projector_linop
+        # sector_es, sector_vs = scipy.sparse.linalg.eigsh(projected_h, k=dimension, which="SA")
+        # nonzero_eig_indices = np.where(sector_es < -1e-6)[0]
+        projected_eigenvectors.append((sector_es, sector_vs_big))
         relevant_sector_indices.append(i)
 
     born_oppenheimer_vectors = [s[1][:, np.argmin(s[0])] for s in projected_eigenvectors]
@@ -102,6 +112,20 @@ def sector_partitioning_metrics(moldata: ffsim.MolecularData,
     return e_dec, e_bo, k_en, k_overlap
 
 
+def subspace_matrix(A, support):
+    dim = support.shape[0]
+
+    A_sub = np.zeros((dim, dim), dtype="complex")
+
+    for i, big_index in enumerate(support):
+        x = np.zeros(A.shape[0], dtype="complex")
+        x[big_index] = 1
+        y = A @ x
+        A_sub[:, i] = y[support]
+
+    return A_sub
+
+
 
 def generalized_seniority_projectors(orbital_index, a, b, c):
     sectors = distinct_generalized_seniority_sectors(a, b, c)
@@ -123,7 +147,7 @@ def generalized_seniority_projectors(orbital_index, a, b, c):
     return projectors
 
 
-def distinct_generalized_seniority_sectors(a, b, c, atol=1e-2):
+def distinct_generalized_seniority_sectors(a, b, c, atol=1e-1):
     sector_eigenvalues = [0, a, b, a + b + c]
 
     # https://stackoverflow.com/a/38924644/
