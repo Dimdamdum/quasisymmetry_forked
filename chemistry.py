@@ -135,6 +135,12 @@ def build_h2_geometry(bond_length: float):
         ("H", (bond_length, 0., 0.))
     ]
 
+def build_n2_geometry(bond_length: float):
+    return [
+        ("N", (0, 0., 0.)),
+        ("N", (bond_length, 0., 0.))
+    ]
+
 
 def get_geometry_and_description(molecule: str, x: float, **kwargs):
     mol = molecule.lower()
@@ -158,6 +164,9 @@ def get_geometry_and_description(molecule: str, x: float, **kwargs):
 
     elif mol == "h2":
         return build_h2_geometry(x), f"H2_bond{x:.4f}"
+
+    elif mol == "n2":
+        return build_n2_geometry(x), f"N2_bond{x:.4f}"
 
     else:
         raise ValueError(

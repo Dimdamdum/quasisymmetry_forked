@@ -28,20 +28,25 @@ if __name__=="__main__":
 
     iu = np.triu_indices(norb, k=1)
     m = iu[0].shape[0]
-    xs = np.zeros((args.npoints, m + 2))
 
     rng = np.random.default_rng()
 
     if args.mode == "perturb_U":
+        xs = np.zeros((args.npoints, m + 2))
         for i in range(args.npoints):
             xs[i, :m] = rng.normal(scale=10**(args.noise_scale), size=m)
             xs[i, m:] = SENIORITY_ANGLES
     elif args.mode == "perturb_all":
+        xs = np.zeros((args.npoints, m + 2))
         for i in range(args.npoints):
             xs[i, m:] = SENIORITY_ANGLES
             xs[i, :] += rng.normal(scale=10**(args.noise_scale), size=m + 2)
+    elif args.mode == "only_U":
+        xs = np.zeros((args.npoints, m))
+        for i in range(args.npoints):
+            xs[i, :m] = rng.normal(scale=10**(args.noise_scale), size=m)
     else:
-        raise ValueError("--mode can be 'perturb_U' or 'perturb_all'")
+        raise ValueError("--mode can be 'perturb_U', 'perturb_all', 'only_U'")
 
     np.savetxt("x0_" + str(norb)
                + "_" + args.mode + "_" + str(args.noise_scale)

@@ -8,7 +8,7 @@ from chemistry import  get_geometry_and_description
 if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("mol",
-                        help="one of the following: lih, h2o, h4_linear, h4_square, h4_rectangle, h2")
+                        help="one of the following: lih, h2o, h4_linear, h4_square, h4_rectangle, h2, n2")
     parser.add_argument("bond", type=float, help="bond")
     parser.add_argument("--basis", default="sto-3g")
     parser.add_argument("--mol_parameter_2", type=float,

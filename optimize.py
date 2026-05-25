@@ -1,4 +1,4 @@
-"""Find approximate quasisymmetries for a given Hamiltonian and save their parameters."""
+"""Find approximate symmetries for a given Hamiltonian and save their parameters."""
 
 import argparse
 from itertools import combinations
