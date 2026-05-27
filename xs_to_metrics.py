@@ -4,6 +4,7 @@ import ffsim
 import numpy as np
 import scipy
 import json
+from tqdm import tqdm
 
 from itertools import product
 
@@ -93,10 +94,14 @@ def sector_partitioning_metrics(moldata: ffsim.MolecularData,
     energies_by_energy_order = np.zeros_like(energies_pooled)
     energies_by_overlap_order = np.zeros_like(energies_pooled)
 
-    for i in range(len(energies_pooled)):
+    for i in tqdm(range(len(energies_pooled))):
         indices = overlap_order_of_vectors[:i + 1]
         h = h_vecs_pooled[:, indices][indices, :]
-        energies_by_overlap_order[i] = np.linalg.eigvalsh(h)[0]
+        # energies_by_overlap_order[i] = np.linalg.eigvalsh(h)[0]
+        if i == 0:
+            energies_by_overlap_order[i] = h[0][0]
+        else:
+            energies_by_overlap_order[i] = scipy.sparse.linalg.eigsh(h, which="SA", k=1)[0][0]
         if energies_by_overlap_order[i] - e_0 < target_accuracy:
             k_overlap = i + 1
             break
@@ -104,10 +109,14 @@ def sector_partitioning_metrics(moldata: ffsim.MolecularData,
         raise AssertionError("This should never happen, go take a look")
 
 
-    for i in range(len(energies_pooled)):
+    for i in tqdm(range(len(energies_pooled))):
         indices = energy_order_of_vectors[:i + 1]
         h = h_vecs_pooled[:, indices][indices, :]
-        energies_by_energy_order[i] = np.linalg.eigvalsh(h)[0]
+        # energies_by_energy_order[i] = np.linalg.eigvalsh(h)[0]
+        if i == 0:
+            energies_by_overlap_order[i] = h[0][0]
+        else:
+            energies_by_overlap_order[i] = scipy.sparse.linalg.eigsh(h, which="SA", k=1)[0][0]
         if energies_by_energy_order[i] - e_0 < target_accuracy:
             k_en = i + 1
             break
