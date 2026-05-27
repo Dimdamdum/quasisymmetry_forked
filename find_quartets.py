@@ -87,8 +87,8 @@ def visualize_nc(moldata, state, U, mo=True, save=False):
                                 U)
 
     print("NC factors")
-    for e in G.edges(data=True):
-        print(e[0], e[1], e[2]['weight'])
+    # for e in G.edges(data=True):
+    #     print(e[0], e[1], e[2]['weight'])
 
     if mo:
         plt.figure()
@@ -177,6 +177,13 @@ if __name__=="__main__":
     else:
         raise ValueError("--reference can be 'hf' or 'fci'")
 
+    mo_quartets = all_quartet_commutators(moldata, state, np.eye(moldata.norb))
+    mo_quartets_matrix = np.triu(nx.adjacency_matrix(mo_quartets).todense(), 1)
+    iu = np.triu_indices(moldata.norb, 1)
+    mo_quartets_sorted = np.sort(mo_quartets_matrix[iu])
+    sum_of_lowest_mo_quartets = np.sum(mo_quartets_sorted[:moldata.norb])
+    print("Sum of lowest m quartets (canonical orbitals)", sum_of_lowest_mo_quartets)
+
     if args.quartet_graph == "ring":
         quartet_graph = nx.cycle_graph(moldata.norb)
     else:
@@ -200,7 +207,12 @@ if __name__=="__main__":
     else:
         raise ValueError()
 
-
+    optimized_quartets = all_quartet_commutators(moldata, state, U)
+    opt_quartets_matrix = np.triu(nx.adjacency_matrix(optimized_quartets).todense(), 1)
+    iu = np.triu_indices(moldata.norb, 1)
+    opt_quartets_sorted = np.sort(opt_quartets_matrix[iu])
+    sum_of_lowest_opt_quartets = np.sum(opt_quartets_sorted[:moldata.norb])
+    print("Sum of lowest m quartets (optimized orbitals)", sum_of_lowest_opt_quartets)
 
 
 
