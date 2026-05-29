@@ -78,7 +78,8 @@ def quartet_noncommutation_factor(h,
                        i: int,
                        j: int):
     quartets = make_quartets(moldata.norb, moldata.nelec)
-    commutator = h @ quartets[(i, j)] - quartets[(i, j)] @ h
+    indices = (i, j) if i <= j else (j, i)
+    commutator = h @ quartets[indices] - quartets[indices] @ h
     state_after_commutator = commutator @ state
     return np.linalg.norm(state_after_commutator)**2
 
@@ -344,6 +345,9 @@ if __name__=="__main__":
     mo_quartets_adj = np.triu(nx.adjacency_matrix(mo_quartets_graph).todense(), 1)
     iu = np.triu_indices(moldata.norb, 1)
     mo_quartets_sorted = np.sort(mo_quartets_adj[iu])
+
+    best_mo_quartet_indices = np.argsort(mo_quartets_adj[iu])[:moldata.norb]
+
     sum_of_lowest_mo_quartets = np.sum(mo_quartets_sorted[:moldata.norb])
     print("Sum of lowest m quartets (canonical orbitals)", sum_of_lowest_mo_quartets)
 
@@ -352,6 +356,11 @@ if __name__=="__main__":
     elif args.quartet_graph == "matching":
         edges = [(2 * i, 2 * i + 1) for i in range(moldata.norb // 2)]
         quartet_graph = nx.from_edgelist(edges)
+    elif args.quartet_graph == "topm" or args.quartet_graph == "greedy":
+        best_quartets = tuple([(int(iu[0][i]), int(iu[1][i]))
+                               for i in best_mo_quartet_indices])
+        quartet_graph = nx.from_edgelist(best_quartets)
+
     else:
         raise ValueError()
     print(list(quartet_graph.edges()))
