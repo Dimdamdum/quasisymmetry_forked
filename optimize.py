@@ -8,6 +8,9 @@ import ffsim
 import scipy
 import pyscf
 from typing import Tuple, Callable
+from pathlib import Path
+
+from functools import cache
 
 SENIORITY_ANGLES = (np.arccos(-2.0 / np.sqrt(6.0)), np.pi / 4.0)
 
@@ -128,7 +131,7 @@ if __name__=="__main__":
                         help="path to the Hamiltonian (PySCF checkfile)")
     parser.add_argument("initialguesses",
                         help="path to file with initial guesses (one line = one point)")
-    parser.add_argument("cost_function", help="what to optimize over")
+    # parser.add_argument("cost_function", help="what to optimize over")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--reference",
                         help="reference state to use in calculations (default: fci)",
@@ -138,11 +141,16 @@ if __name__=="__main__":
 
     args = parser.parse_args()
 
-    mol = pyscf.lib.chkfile.load_mol(args.molpath)
-    mf = pyscf.scf.RHF(mol)
-    mf.update_from_chk(args.molpath)
+    p = Path(args.molpath)
+    if p.suffix == ".chk":
+        mol = pyscf.lib.chkfile.load_mol(args.molpath)
+        mf = pyscf.scf.RHF(mol)
+        mf.update_from_chk(args.molpath)
 
-    moldata = ffsim.MolecularData.from_scf(mf)
+        moldata = ffsim.MolecularData.from_scf(mf)
+    elif p.suffix == ".FCIDUMP":
+        scf = pyscf.tools.fcidump.to_scf(args.molpath)
+        moldata = ffsim.MolecularData.from_scf(scf)
 
     xs_filename = (time.strftime("%Y%m%d_%H%M%S", time.localtime())
                    + "_x_opt.txt")
@@ -150,17 +158,17 @@ if __name__=="__main__":
               "a", newline="") as fp:
         fp.write(str(vars(args)) + "\n")
 
-    if args.cost_function == "commutator":
-        if args.reference == "fci":
-            # f = commutator_cost_fci(moldata)
-            f = commutator_cost(moldata, "fci")
-        elif args.reference == "hf":
-            # f = commutator_cost_hf(moldata)
-            f = commutator_cost(moldata, "hf")
-        else:
-            raise ValueError()
+    # if args.cost_function == "commutator":
+    if args.reference == "fci":
+        # f = commutator_cost_fci(moldata)
+        f = commutator_cost(moldata, "fci")
+    elif args.reference == "hf":
+        # f = commutator_cost_hf(moldata)
+        f = commutator_cost(moldata, "hf")
     else:
-        raise NotImplementedError()
+        raise ValueError()
+    # else:
+    #     raise NotImplementedError()
 
 
     def foo_abc_112(y):
@@ -169,6 +177,9 @@ if __name__=="__main__":
 
 
     initial_guesses = np.loadtxt(args.initialguesses)
+
+    if len(initial_guesses.shape) == 1:
+        initial_guesses = initial_guesses.reshape((len(initial_guesses), 1)).T
     n_points = initial_guesses.shape[0]
     for i in range(n_points):
         x_0 = initial_guesses[i, :]
