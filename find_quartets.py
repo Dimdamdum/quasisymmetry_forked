@@ -155,7 +155,7 @@ def quartet_sectors(quartets, norb, nelec):
 def sector_metrics(moldata, state, U,
                    sectors,
                    target_energy,
-                   max_states_per_sector=100):
+                   max_states_per_sector=500):
     print("sector dimensions:")
     print([len(v) for v in sectors.values()])
 
@@ -312,7 +312,7 @@ def args_parser():
                         )
     parser.add_argument("--visualize", action="store_true",
                         help="Draw the NC metrics after optimization")
-    parser.add_argument("--quartet_graph", default="ring")
+    parser.add_argument("--quartet_graph", default="topm")
     parser.add_argument("--initial_guess", default=None)
     parser.add_argument("--initial_guess_scale",
                         default=-2, type=int)
@@ -360,12 +360,13 @@ if __name__=="__main__":
         best_quartets = tuple([(int(iu[0][i]), int(iu[1][i]))
                                for i in best_mo_quartet_indices])
         quartet_graph = nx.from_edgelist(best_quartets)
-
+    elif args.quartet_graph == "complete":
+        quartet_graph = nx.complete_graph(moldata.norb)
     else:
         raise ValueError()
     print(list(quartet_graph.edges()))
 
-
+    print(str(vars(args)))
 
     if args.optimization_mode is None or args.optimization_mode == "None":
         print("No orbital optimization")
@@ -385,7 +386,7 @@ if __name__=="__main__":
             x0 = np.zeros(comb(moldata.norb, 2))
             print("NC cost, canonical orbitals {0:2.4f}".format(f(x0)))
 
-        res = scipy.optimize.minimize(f, x0, method="L-BFGS-B", options={"maxiter": 100})
+        res = scipy.optimize.minimize(f, x0, method="L-BFGS-B", options={"maxiter": 500})
         print(res)
         U = x_to_rotation(res.x, moldata.norb)
     else:
