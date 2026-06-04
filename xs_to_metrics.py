@@ -114,9 +114,9 @@ def sector_partitioning_metrics(moldata: ffsim.MolecularData,
         h = h_vecs_pooled[:, indices][indices, :]
         # energies_by_energy_order[i] = np.linalg.eigvalsh(h)[0]
         if i == 0:
-            energies_by_overlap_order[i] = h[0][0]
+            energies_by_energy_order[i] = h[0][0]
         else:
-            energies_by_overlap_order[i] = scipy.sparse.linalg.eigsh(h, which="SA", k=1)[0][0]
+            energies_by_energy_order[i] = scipy.sparse.linalg.eigsh(h, which="SA", k=1)[0][0]
         if energies_by_energy_order[i] - e_0 < target_accuracy:
             k_en = i + 1
             break

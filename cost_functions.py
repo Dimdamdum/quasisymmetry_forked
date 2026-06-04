@@ -2,6 +2,7 @@ import numpy as np
 import openfermion as of
 from typing import Union, Callable
 from itertools import combinations
+import scipy
 
 from chemistry import build_U_from_thetas
 from optimization_different_abc import rotated_seniority_orbital_fermion
@@ -84,3 +85,19 @@ def commutator_cost_number_pres(H, psi, num_electrons, n_orbitals):
         return total
 
     return f, m
+
+
+def x_to_rotation(x, norb):
+    iu = np.triu_indices(norb, k=1)
+    rotation_generator = np.zeros((norb, norb))
+    rotation_generator[iu] = x
+    rotation_generator -= rotation_generator.T
+    return scipy.linalg.expm(rotation_generator)
+
+
+def rotation_to_x(U):
+    norb = U.shape[0]
+    iu = np.triu_indices(norb, k=1)
+    rotation_generator = scipy.linalg.logm(U)
+    x = rotation_generator[iu]
+    return x

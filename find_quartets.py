@@ -91,7 +91,7 @@ def visualize_nc(moldata, state, U, mo=True, save=False):
 
     if mo:
         plt.figure()
-        plt.imshow(mf.mo_coeff @ U, cmap="PuOr", vmin=-1, vmax=1)
+        plt.imshow(scf.mo_coeff @ U, cmap="PuOr", vmin=-1, vmax=1)
         plt.yticks(range(mol.nao), mol.ao_labels())
         plt.xticks(range(mol.nao), range(mol.nao))
         plt.title("Optimized orbitals \n" + args.molpath)
@@ -324,14 +324,25 @@ if __name__=="__main__":
     parser = args_parser()
     args = parser.parse_args()
 
-    print("loading the hamiltonian")
-    mol = pyscf.lib.chkfile.load_mol(args.molpath)
-    mf = pyscf.scf.RHF(mol)
-    mf.update_from_chk(args.molpath)
-    moldata = ffsim.MolecularData.from_scf(mf)
+    # print("loading the hamiltonian")
+    # mol = pyscf.lib.chkfile.load_mol(args.molpath)
+    # mf = pyscf.scf.RHF(mol)
+    # mf.update_from_chk(args.molpath)
+    # moldata = ffsim.MolecularData.from_scf(mf)
+
+    p = Path(args.molpath)
+    if p.suffix == ".chk":
+        mol = pyscf.lib.chkfile.load_mol(args.molpath)
+        scf = pyscf.scf.RHF(mol)
+        scf.update_from_chk(args.molpath)
+
+        moldata = ffsim.MolecularData.from_scf(scf)
+    elif p.suffix == ".FCIDUMP":
+        scf = pyscf.tools.fcidump.to_scf(args.molpath)
+        moldata = ffsim.MolecularData.from_scf(scf)
 
     print("finding fci") # we need it for energy metrics anyway
-    cisolver = pyscf.fci.FCI(mf)
+    cisolver = pyscf.fci.FCI(scf)
     cisolver.kernel()
 
     if args.reference == "fci":

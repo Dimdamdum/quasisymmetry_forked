@@ -65,6 +65,45 @@ def commutator_cost(moldata: ffsim.MolecularData, reference="fci") -> Callable:
     return f
 
 
+def commutator_cost_2(moldata: ffsim.MolecularData, reference="fci"):
+    h_linop = ffsim.linear_operator(moldata.hamiltonian,
+                                    norb=moldata.norb,
+                                    nelec=moldata.nelec)
+
+    if reference == "fci":
+        _, ref_state = scipy.sparse.linalg.eigsh(h_linop, which="SA", k=1)
+    elif reference == "hf":
+        ref_state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
+    else:
+        raise ValueError("reference can be 'fci' or 'hf'")
+
+    def f(x):
+        U = x_to_rotation(x, moldata.norb)
+        h = ffsim.linear_operator(moldata.hamiltonian.rotated(U),
+                                      norb=moldata.norb, nelec=moldata.nelec)
+        rotated_state = ffsim.apply_orbital_rotation(ref_state, U, moldata.norb, moldata.nelec)
+        total_nc = 0
+        for i in range(moldata.norb):
+            total_nc += seniority_noncommutation_factor(h, rotated_state,
+                                                        moldata.norb, moldata.nelec,
+                                                        i)
+        return total_nc
+    return f
+
+
+def seniority_noncommutation_factor(h, state, norb, nelec, i):
+    sens = make_seniorities(norb, nelec)
+    commutator = h @ sens[i] - sens[i] @ h
+    state_after_commutator = commutator @ state
+    return np.linalg.norm(state_after_commutator) ** 2
+
+
+@cache
+def make_seniorities(norb, nelec):
+    return make_quasiymmetries(SENIORITY_ANGLES, norb, nelec)
+
+
+
 def variance_cost(moldata: ffsim.MolecularData, reference="fci") -> Callable:
     if reference == "fci":
         h_linop = ffsim.linear_operator(moldata.hamiltonian,
@@ -164,6 +203,7 @@ if __name__=="__main__":
     if args.reference == "fci":
         # f = commutator_cost_fci(moldata)
         f = commutator_cost(moldata, "fci")
+        f_2 = commutator_cost_2(moldata, "fci")
     elif args.reference == "hf":
         # f = commutator_cost_hf(moldata)
         f = commutator_cost(moldata, "hf")
@@ -191,6 +231,7 @@ if __name__=="__main__":
         x_0 = initial_guesses[i, :]
         if args.seniority:
             y_0 = x_0[:-2]
+            f_val = foo_abc_112(y_0)
             res = scipy.optimize.minimize(foo_abc_112, y_0,
                                           method="L-BFGS-B",
                                           options={"maxiter": 1000},
