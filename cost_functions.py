@@ -96,6 +96,9 @@ def x_to_rotation(x, norb):
 
 
 def rotation_to_x(U):
+    """Map U of the special orthogonal group to a vector of elements
+    that can be put into an upper-triangular matrix and antisymmetrized to generate U.
+    Known to have issues when det U != 1."""
     norb = U.shape[0]
     iu = np.triu_indices(norb, k=1)
     rotation_generator = scipy.linalg.logm(U)
