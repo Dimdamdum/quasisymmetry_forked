@@ -200,10 +200,8 @@ if __name__=="__main__":
 
     f_3 = commutator_cost_2(moldata, "fci")
     print(f_3(x))
-    # np.savetxt(h_name + "_U.txt", U)
-    #
-    #
-    #
-    # np.savetxt(h_name + "_x0.txt", x)
-    #
-    # np.savetxt(h_name + "_x0_sen.txt", x_with_sen)
+    np.savetxt(h_name + "_U.txt", U)
+
+    np.savetxt(h_name + "_x0.txt", x)
+
+    np.savetxt(h_name + "_x0_sen.txt", x_with_sen)

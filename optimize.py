@@ -13,6 +13,8 @@ from math import comb
 
 from functools import cache
 
+from chemistry import load_moldata
+
 SENIORITY_ANGLES = (np.arccos(-2.0 / np.sqrt(6.0)), np.pi / 4.0)
 
 
@@ -182,16 +184,19 @@ if __name__=="__main__":
 
     args = parser.parse_args()
 
-    p = Path(args.molpath)
-    if p.suffix == ".chk":
-        mol = pyscf.lib.chkfile.load_mol(args.molpath)
-        mf = pyscf.scf.RHF(mol)
-        mf.update_from_chk(args.molpath)
+    # p = Path(args.molpath)
+    # if p.suffix == ".chk":
+    #     mol = pyscf.lib.chkfile.load_mol(args.molpath)
+    #     mf = pyscf.scf.RHF(mol)
+    #     mf.update_from_chk(args.molpath)
+    #
+    #     moldata = ffsim.MolecularData.from_scf(mf)
+    # elif p.suffix == ".FCIDUMP":
+    #     # scf = pyscf.tools.fcidump.to_scf(args.molpath)
+    #     # moldata = ffsim.MolecularData.from_scf(scf)
+    #     moldata = ffsim.MolecularData.from_fcidump(args.molpath)
 
-        moldata = ffsim.MolecularData.from_scf(mf)
-    elif p.suffix == ".FCIDUMP":
-        scf = pyscf.tools.fcidump.to_scf(args.molpath)
-        moldata = ffsim.MolecularData.from_scf(scf)
+    moldata = load_moldata(args.molpath)
 
     xs_filename = (time.strftime("%Y%m%d_%H%M%S", time.localtime())
                    + "_x_opt.txt")

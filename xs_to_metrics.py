@@ -8,6 +8,7 @@ from tqdm import tqdm
 from pathlib import Path
 from itertools import product
 
+from chemistry import load_moldata
 from optimize import commutator_cost, variance_cost, x_to_rotation
 
 
@@ -229,16 +230,18 @@ if __name__=="__main__":
     # mf = pyscf.scf.RHF(mol)
     # mf.update_from_chk(args.molpath)
     # moldata = ffsim.MolecularData.from_scf(mf)
-    p = Path(args.molpath)
-    if p.suffix == ".chk":
-        mol = pyscf.lib.chkfile.load_mol(args.molpath)
-        mf = pyscf.scf.RHF(mol)
-        mf.update_from_chk(args.molpath)
+    # p = Path(args.molpath)
+    # if p.suffix == ".chk":
+    #     mol = pyscf.lib.chkfile.load_mol(args.molpath)
+    #     mf = pyscf.scf.RHF(mol)
+    #     mf.update_from_chk(args.molpath)
+    #
+    #     moldata = ffsim.MolecularData.from_scf(mf)
+    # elif p.suffix == ".FCIDUMP":
+    #     scf = pyscf.tools.fcidump.to_scf(args.molpath)
+    #     moldata = ffsim.MolecularData.from_scf(scf)
 
-        moldata = ffsim.MolecularData.from_scf(mf)
-    elif p.suffix == ".FCIDUMP":
-        scf = pyscf.tools.fcidump.to_scf(args.molpath)
-        moldata = ffsim.MolecularData.from_scf(scf)
+    moldata = load_moldata(args.molpath)
 
     commutator_fci = commutator_cost(moldata, "fci")
     commutator_hf = commutator_cost(moldata, "hf")

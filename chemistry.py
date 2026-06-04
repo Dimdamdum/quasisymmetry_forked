@@ -3,6 +3,10 @@ import openfermion as of
 from openfermionpyscf import run_pyscf
 from dataclasses import dataclass
 
+import ffsim
+from pathlib import Path
+import pyscf
+
 # from optimization_different_abc import givens
 
 @dataclass
@@ -12,6 +16,18 @@ class FakeMolecularData:
     hamiltonian: of.InteractionOperator
 
 
+def load_moldata(molpath):
+    p = Path(molpath)
+    if p.suffix == ".chk":
+        mol = pyscf.lib.chkfile.load_mol(molpath)
+        mf = pyscf.scf.RHF(mol)
+        mf.update_from_chk(molpath)
+        moldata = ffsim.MolecularData.from_scf(mf)
+    elif p.suffix == ".FCIDUMP":
+        moldata = ffsim.MolecularData.from_fcidump(molpath)
+    else:
+        raise ValueError("hamiltonian must be a pyscf checkfile or an fcidump")
+    return moldata
 
 def get_mol(molname, bond):
     geometry, description = get_geometry_and_description(molname, bond)
