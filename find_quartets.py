@@ -160,7 +160,7 @@ def quartet_sectors(quartets, norb, nelec):
 def sector_metrics(moldata, state, U,
                    sectors,
                    target_energy,
-                   max_states_per_sector=500):
+                   max_states_per_sector=10):
     print("sector dimensions:")
     print([len(v) for v in sectors.values()])
 
@@ -221,7 +221,7 @@ def sector_metrics(moldata, state, U,
             K_en =  i + 1
             break
     else:
-        K_en = np.nan
+        K_en = len(energy_order)
         print("Chemical accuracy not reached, try more vectors per sector")
 
     pooled_overlaps = {}
@@ -264,7 +264,7 @@ def sector_metrics(moldata, state, U,
             K_overlap =  i + 1
             break
     else:
-        K_overlap = np.nan
+        K_overlap = len(energy_order)
         print("Chemical accuracy not reached, try more vectors per sector")
 
     energy_vectors_used = [vector_labels[i] for i in energy_order[:K_en]]
@@ -322,6 +322,7 @@ def args_parser():
     # parser.add_argument("--initial_guess_scale",
     #                     default=-2, type=int)
     parser.add_argument("--dontsave", action="store_true")
+    parser.add_argument("--sector_limit", type=int, default=None)
     return parser
 
 
@@ -463,8 +464,12 @@ if __name__=="__main__":
 
     sectors = quartet_sectors(spanning_edges, moldata.norb, moldata.nelec)
 
-    sector_data = sector_metrics(moldata, state, U, sectors,
-                   target_energy=cisolver.e_tot + 0.0016)
+    if args.sector_limit is not None:
+        sector_data = sector_metrics(moldata, state, U, sectors,
+                   target_energy=cisolver.e_tot + 0.0016, max_states_per_sector=args.sector_limit)
+    else:
+        sector_data = sector_metrics(moldata, state, U, sectors,
+                                     target_energy=cisolver.e_tot + 0.0016)
 
     for k, v in sector_data.items():
         if k not in ("Energy sectors", "Overlap sectors"):
