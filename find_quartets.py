@@ -87,18 +87,19 @@ def quartet_noncommutation_factor(h,
     return np.linalg.norm(state_after_commutator)**2
 
 
-def visualize_nc(mol, moldata, state, U, mo=True, save=False):
-    raise NotImplementedError()
+def visualize_nc(moldata, state, U, mo=False, save=False, mol=None, scf=None):
 
     G = all_quartet_commutators(moldata,
                                 state,
                                 U)
 
     if mo:
+        if scf is None or mol is None:
+            raise ValueError()
         plt.figure()
         plt.imshow(scf.mo_coeff @ U, cmap="PuOr", vmin=-1, vmax=1)
-        plt.yticks(range(mol.nao), mol.ao_labels())
-        plt.xticks(range(mol.nao), range(mol.nao))
+        plt.yticks(range(moldata.norb), mol.ao_labels())
+        plt.xticks(range(moldata.norb), range(moldata.norb))
         plt.title("Optimized orbitals \n" + args.molpath)
         plt.colorbar()
         if save:
@@ -108,8 +109,8 @@ def visualize_nc(mol, moldata, state, U, mo=True, save=False):
     plt.figure()
     plt.imshow(adj, norm=LogNorm(vmin=1e-4, vmax=1))
     plt.colorbar()
-    plt.xticks(range(mol.nao), range(mol.nao))
-    plt.yticks(range(mol.nao), range(mol.nao))
+    plt.xticks(range(moldata.norb), range(moldata.norb))
+    plt.yticks(range(moldata.norb), range(moldata.norb))
     if args.reference == "fci":
         plt.title("Quartet noncommutativity norm $||[H, s_{pq}]|FCI\\rangle||^2$ \n" + args.molpath
                   + "\n Diagonal entries are $||[H, s_{p}]|FCI\\rangle||^2$")
@@ -317,12 +318,13 @@ def args_parser():
                         )
     parser.add_argument("--visualize", action="store_true",
                         help="Draw the NC metrics after optimization")
-    parser.add_argument("--quartet_graph", default="topm")
+    parser.add_argument("--quartet_graph", default="topm", help="graph used in optimization")
     parser.add_argument("--initial_guess", default=None)
     # parser.add_argument("--initial_guess_scale",
     #                     default=-2, type=int)
     parser.add_argument("--dontsave", action="store_true")
     parser.add_argument("--sector_limit", type=int, default=None)
+    parser.add_argument("--partitioning_graph", default="reuse", help="graph used for partitioning")
     return parser
 
 
@@ -336,6 +338,9 @@ if __name__=="__main__":
     if p.suffix == ".chk":
         mol = pyscf.lib.chkfile.load_mol(args.molpath)
         scf_data = pyscf.lib.chkfile.load(args.molpath, "scf")
+
+        scf = pyscf.scf.RHF(mol)
+        scf.update_from_chk(args.molpath)
 
         norb = mol.nao
         nelec = mol.nelec
@@ -380,13 +385,6 @@ if __name__=="__main__":
 
     print("FCI energy")
     print(cisolver.e_tot)
-    # h = ffsim.linear_operator(moldata.hamiltonian, moldata.norb, moldata.nelec)
-    # print(state.T.conj() @ h @ state)
-    # w, v = scipy.sparse.linalg.eigsh(h, which="SA", k=1)
-    # print(w)
-    #
-    # exit()
-
 
     mo_quartets_graph = all_quartet_commutators(moldata, state, np.eye(moldata.norb))
     mo_quartets_adj = np.triu(nx.adjacency_matrix(mo_quartets_graph).todense(), 1)
@@ -409,6 +407,10 @@ if __name__=="__main__":
         quartet_graph = nx.from_edgelist(best_quartets)
     elif args.quartet_graph == "complete":
         quartet_graph = nx.complete_graph(moldata.norb)
+    elif args.quartet_graph == "top1":
+        best_quartets = tuple([(int(iu[0][i]), int(iu[1][i]))
+                               for i in best_mo_quartet_indices])
+        quartet_graph = nx.from_edgelist([best_quartets[0]])
     else:
         raise ValueError()
     print(list(quartet_graph.edges()))
@@ -424,14 +426,6 @@ if __name__=="__main__":
 
         f = nc_cost(moldata, state, quartet_graph)
 
-        # if args.initial_guess == "random":
-        #     rng = np.random.default_rng()
-        #     x0 = rng.normal(scale=10**(args.initial_guess_scale),
-        #                     size=comb(moldata.norb, 2))
-        #     print("NC cost, random initial guess {0:2.4f}".format(f(x0)))
-        # else:
-        #     x0 = np.zeros(comb(moldata.norb, 2))
-        #     print("NC cost, canonical orbitals {0:2.4f}".format(f(x0)))
         if args.initial_guess is None:
             x0 = np.zeros(comb(moldata.norb, 2))
         else:
@@ -457,12 +451,20 @@ if __name__=="__main__":
 
     print("creating sectors")
 
-    spanning_edges = list(nx.minimum_spanning_edges(optimized_quartets_graph, keys=False, data=False))
+    if args.partitioning_graph == "mst":
+        spanning_edges = list(nx.minimum_spanning_edges(optimized_quartets_graph, keys=False, data=False))
 
-    print("Minimum spanning tree")
-    print(spanning_edges)
+        print("Minimum spanning tree")
+        print(spanning_edges)
 
-    sectors = quartet_sectors(spanning_edges, moldata.norb, moldata.nelec)
+        partitioning_edges = spanning_edges
+    elif args.partitioning_graph == "reuse":
+        print("Using the same graph to define sectors")
+        partitioning_edges = list(quartet_graph.edges())
+    else:
+        raise ValueError()
+
+    sectors = quartet_sectors(partitioning_edges, moldata.norb, moldata.nelec)
 
     if args.sector_limit is not None:
         sector_data = sector_metrics(moldata, state, U, sectors,
@@ -476,7 +478,11 @@ if __name__=="__main__":
             print(k, v)
 
     if args.visualize:
-        visualize_nc(moldata, state, U)
+        if p.suffix == ".chk":
+            visualize_nc(moldata, state, U, scf=scf, mol=mol, mo=True)
+        else:
+            visualize_nc(moldata, state, U, scf=None, mol=None)
+
 
     output = {"vars": vars(args),
               "quartet_graph_for_opt": list(quartet_graph.edges()),
@@ -486,7 +492,7 @@ if __name__=="__main__":
               "lowest_nc_quartets": best_quartets,
               "lowest_m_quartet_sum_opt": sum_of_lowest_opt_quartets,
               "sector_data": sector_data,
-              "Minimum spanning tree": spanning_edges,
+              "Sector-defining graph": partitioning_edges,
               "FCI energy": cisolver.e_tot}
     stamp = uuid.uuid4().hex[:6]
 
