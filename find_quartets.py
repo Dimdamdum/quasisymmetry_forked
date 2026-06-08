@@ -364,9 +364,11 @@ if __name__=="__main__":
         raise ValueError()
 
 
-    print("finding fci") # we need it for energy metrics anyway
+    print("finding fci...", end=" ") # we need it for energy metrics anyway
 
     cisolver = pyscf.fci.direct_spin1.FCI()
+    cisolver.max_cycle = 500
+    cisolver.conv_tol = 1e-10
     e, fcivec = cisolver.kernel(
         h1,
         eri,
@@ -374,7 +376,10 @@ if __name__=="__main__":
         nelec,
         ecore=ecore,
     )
-
+    if not cisolver.converged:
+        raise RuntimeError("FCI didn't converge!")
+    else:
+        print("OK")
 
     if args.reference == "fci":
         state = np.array(fcivec.reshape((-1,)), dtype="complex")  # ffsim will complain without dtype='complex'
