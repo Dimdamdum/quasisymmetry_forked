@@ -7,7 +7,6 @@ import ffsim
 from pathlib import Path
 import pyscf
 
-# from optimization_different_abc import givens
 
 @dataclass
 class FakeMolecularData:
@@ -53,6 +52,8 @@ def fcidump_data(molpath):
         dumpdata["H2"] = pyscf.ao2mo.full(mol, mo_coeff)
         dumpdata["ECORE"] = mol.energy_nuc()
         return dumpdata
+    else:
+        raise ValueError(".chk or .FCIDUMP")
 
 
 def get_mol(molname, bond):

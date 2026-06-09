@@ -4,12 +4,11 @@ import time
 import ffsim
 import scipy
 import pyscf
+import pyscf.fci
 
-from typing import Tuple, Callable
-from pathlib import Path
+from typing import Callable
 from math import comb
 from functools import cache, reduce
-from itertools import combinations
 
 from chemistry import load_moldata, fcidump_data
 
@@ -143,6 +142,8 @@ if __name__=="__main__":
 
     print("before optimization: {0:4.6f}".format(f(x0)))
     res = scipy.optimize.minimize(f, x0, method="L-BFGS-B",
-                                  options={"maxiter": 10},
+                                  options={"maxiter": 100},
                                   callback=callback if args.verbose else None)
-    print(res)
+    print(res.message)
+    print("optimized: {0:4.6f}".format(res.fun))
+    np.savetxt("x_opt.txt", res.x)
