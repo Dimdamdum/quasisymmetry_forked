@@ -1,0 +1,9 @@
+# matrix of guessed quasisymmetries for N2 at 1.1 Angstrom
+# seniorities on 4 core orbitals, two-orbital parities ("quartets") on bond pairs
+1 0 0 0 0 0 0 0 0 0
+0 1 0 0 0 0 0 0 0 0
+0 0 1 0 0 0 0 0 0 0
+0 0 0 1 0 0 0 0 0 0
+0 0 0 0 1 0 0 1 0 0
+0 0 0 0 0 1 0 0 1 0
+0 0 0 0 0 0 1 0 0 1
