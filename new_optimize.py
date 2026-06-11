@@ -68,7 +68,34 @@ def parity_matrix_to_quasisymmetries(parity_matrix: np.ndarray,
             operators.append(quasisymmetry)
         return operators
     elif parity_matrix.shape[1] == norb * 2:
-        raise NotImplementedError()
+        operators = []
+        for i in range(parity_matrix.shape[0]):
+            current_ops = []
+            for j in range(norb):
+                if parity_matrix[i][2 * j] == parity_matrix[i][2 * j + 1] == 1:
+                    current_ops.append(local_parities[j])
+                elif parity_matrix[i][2 * j] == 1:
+                    s_alpha = ffsim.FermionOperator(
+                        {
+                            (ffsim.cre_a(j), ffsim.des_a(j)): -2,
+                            (): 1
+                        }
+                    )
+                    current_ops.append(ffsim.linear_operator(s_alpha, norb, nelec))
+                elif parity_matrix[i][2 * j + 1] == 1:
+                    s_beta = ffsim.FermionOperator(
+                        {
+                            (ffsim.cre_b(j), ffsim.des_b(j)): -2,
+                            (): 1
+                        }
+                    )
+                    current_ops.append(ffsim.linear_operator(s_beta, norb, nelec))
+
+            quasisymmetry = reduce(lambda a, b: a @ b,
+                                   current_ops
+                                   )
+            operators.append(quasisymmetry)
+        return operators
     else:
         raise ValueError("shape[1] must be norb or 2 * norb")
 
