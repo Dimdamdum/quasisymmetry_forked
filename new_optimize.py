@@ -85,7 +85,7 @@ def get_fci(dumpdata):
     cisolver = pyscf.fci.direct_spin1.FCI()
     cisolver.max_cycle = 500
     cisolver.conv_tol = 1e-10
-    _, fcivec = cisolver.kernel(
+    e_fci, fcivec = cisolver.kernel(
         dumpdata["H1"],
         dumpdata["H2"],
         dumpdata["NORB"],
@@ -94,7 +94,7 @@ def get_fci(dumpdata):
     )
     if not cisolver.converged:
         raise RuntimeError("FCI didn't converge!")
-    return np.array(fcivec.reshape((-1,)), dtype="complex")
+    return e_fci, np.array(fcivec.reshape((-1,)), dtype="complex")
 
 
 def callback(intermediate_result):
@@ -127,7 +127,7 @@ if __name__=="__main__":
                                                   moldata.norb,
                                                   moldata.nelec)
     if args.reference == "fci":
-        state = get_fci(dumpdata)
+        _, state = get_fci(dumpdata)
     elif args.reference == "hf":
         state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
     else:

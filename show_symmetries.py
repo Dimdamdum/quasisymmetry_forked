@@ -32,7 +32,7 @@ if __name__=="__main__":
         U = np.eye(moldata.norb)
 
     if args.reference == "fci":
-        state = get_fci(dumpdata)
+        _, state = get_fci(dumpdata)
     elif args.reference == "hf":
         state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
     else:
