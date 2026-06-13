@@ -173,4 +173,9 @@ if __name__=="__main__":
                                   callback=callback if args.verbose else None)
     print(res.message)
     print("optimized: {0:4.6f}".format(res.fun))
-    np.savetxt("x_opt.txt", res.x)
+    np.savetxt("x_opt_" + time.strftime("%Y%m%d_%H%M%S",
+                        time.localtime()) + ".txt", res.x)
+    with open(time.strftime("%Y%m%d_%H%M%S",
+                        time.localtime()) + ".txt",
+              "a", newline="") as fp:
+        fp.write(str(vars(args)) + "\n")
