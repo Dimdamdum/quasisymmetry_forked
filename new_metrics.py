@@ -48,6 +48,28 @@ def subspace_matrix(A, support):
     return A_sub
 
 
+def submatrix_eigenvalues_to_target(A: np.ndarray, e_target: float) -> int:
+    """Start in the upper left corner of A, take a KxK block and calculate its
+    lowest eignvalue. Return the smallest K that yields energy below e_target
+    or -1 if no such thing can be found"""
+    e, _ = scipy.sparse.linalg.eigsh(A, which="SA", k=1)
+
+    if e > e_target:
+        return -1
+    elif A[0, 0] < e_target:
+        return 1
+    else:
+        for vec_count in tqdm(range(2, A.shape[0])):
+            submatrix = A[::vec_count, :][:, ::vec_count]
+            e, _ = scipy.sparse.linalg.eigsh(A, which="SA", k=1)
+            if e < e_target:
+                return vec_count
+        else:
+            raise ValueError("this should never happen")
+
+
+
+
 if __name__=="__main__":
     parser = argparse.ArgumentParser(
         description="Calculate the metrics")
@@ -57,6 +79,8 @@ if __name__=="__main__":
                         help="path to the incidence matrix of symmetries")
     parser.add_argument("--U", help="x as orbital rotation",
                         default=None)
+    parser.add_argument("--states_per_sector", type=int, default=10)
+    parser.add_argument("--K_method", default="PT")
     args = parser.parse_args()
 
     moldata = load_moldata(args.molpath)
@@ -100,26 +124,67 @@ if __name__=="__main__":
     lowest_sector_label = None
     print("Calculating sector eigenvalues")
     for sector_label, h_local in tqdm(sector_hamiltonians.items()):
-        sector_gs_pairs[sector_label] = scipy.sparse.linalg.eigsh(
-            h_local, which="SA", k=1)
-        if sector_gs_pairs[sector_label][0] < smallest:
-            smallest = sector_gs_pairs[sector_label][0]
+        if args.states_per_sector <= h_local.shape[0] - 2:
+            sector_gs_pairs[sector_label] = scipy.sparse.linalg.eigsh(
+                h_local, which="SA", k=args.states_per_sector)
+        else:
+            sector_gs_pairs[sector_label] = np.linalg.eigh(h_local)
+        if np.min(sector_gs_pairs[sector_label][0]) < smallest:
+            smallest = np.min(sector_gs_pairs[sector_label][0])
             lowest_sector_label = sector_label
     print("Lowest sector energy and label")
     print(smallest, lowest_sector_label)
 
-    full_space_vectors = np.zeros((rotated_h_linop.shape[0],
-                                   len(sectors.keys())), dtype="complex")
 
-    for i, (k, v) in enumerate(sectors.items()):
-        full_space_vectors[v, i] = sector_gs_pairs[k][1].flatten()
 
-    h_bo = full_space_vectors.T.conj() @ rotated_h_linop @ full_space_vectors
+    # joint_space_dimension = sum([w[0].shape[0] for w in sector_gs_pairs.values()])
+    #
+    # full_space_vectors = np.zeros((rotated_h_linop.shape[0],
+    #                                joint_space_dimension), dtype="complex")
 
-    w_bo, v_bo = np.linalg.eigh(h_bo)
-    e_bo = np.min(w_bo)
+    full_space_vectors = []
+    for k, v in sectors.items():
+        full_space_vectors_in_sector = np.zeros((rotated_h_linop.shape[0],
+                                                 sector_gs_pairs[k][0].shape[0]),
+                                                dtype="complex")
+        full_space_vectors_in_sector[v, :] = sector_gs_pairs[k][1]
+        full_space_vectors.append(full_space_vectors_in_sector)
 
-    print("BO energy ", e_bo)
+    full_space_vectors_cat = np.concatenate(full_space_vectors, axis=1)
+
+    h_subspace = full_space_vectors_cat.T.conj() @ rotated_h_linop @ full_space_vectors_cat
+
+    w_subspace, _ = scipy.sparse.linalg.eigsh(h_subspace, k=1, which="SA")
+    print("Coupled energy", w_subspace)
+    if w_subspace - e_fci > 0.0016:
+        print("Not enough states to reach chemical accuracy")
+        quit()
+    else:
+        lowest_energy_vector_index = np.argmin(np.diag(h_subspace))
+        pt_coefficients_numerator = abs(
+            h_subspace[:, lowest_energy_vector_index])**2
+        pt_coefficients_denominator = (np.diag(h_subspace)
+            - h_subspace[lowest_energy_vector_index, lowest_energy_vector_index])
+        pt_coefficients = pt_coefficients_numerator / pt_coefficients_denominator
+        pt_coefficients = np.nan_to_num(pt_coefficients, posinf=0, neginf=0,
+                                        nan=0)
+        pt_coeffs_order = np.argsort(abs(pt_coefficients))[::-1]
+        h_subspace_reordered = h_subspace[:, pt_coeffs_order][pt_coeffs_order, :]
+        K = submatrix_eigenvalues_to_target(h_subspace_reordered,
+                                            e_fci + 0.0016)
+        print("K ", K)
+
+
+    #
+    # for i, (k, v) in enumerate(sectors.items()):
+    #     full_space_vectors[v, i] = sector_gs_pairs[k][1].flatten()
+    #
+    # h_bo = full_space_vectors.T.conj() @ rotated_h_linop @ full_space_vectors
+    #
+    # w_bo, v_bo = np.linalg.eigh(h_bo)
+    # e_bo = np.min(w_bo)
+    #
+    # print("BO energy ", e_bo)
 
 
 
