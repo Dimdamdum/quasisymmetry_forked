@@ -16,22 +16,44 @@ from new_optimize import parity_matrix_to_quasisymmetries, x_to_rotation, get_fc
 
 def symmetry_sectors(parity_matrix, norb, nelec):
     dim = comb(norb, nelec[0]) * comb(norb, nelec[1])
-    bitstrings = ffsim.addresses_to_strings(range(dim), norb, nelec,
-        bitstring_type=ffsim.BitstringType.INT, concatenate=False)
+    if parity_matrix.shape[1] == norb:
+        bitstrings = ffsim.addresses_to_strings(range(dim), norb, nelec,
+            bitstring_type=ffsim.BitstringType.INT, concatenate=False)
+        bit_powers = 2**(np.arange(norb - 1, -1, -1))
+        bit_masks = parity_matrix[:, ::-1] @ bit_powers
 
-    bit_powers = 2**(np.arange(norb - 1, -1, -1))
-    bit_masks = parity_matrix[:, ::-1] @ bit_powers
+        sectors = {}
+        for i in range(dim):
+            ab_parities = bitstrings[0][i] ^ bitstrings[1][i]
+            sector_label = tuple(
+                (int.bit_count(int(ab_parities & q)) % 2
+                 for q in bit_masks)
+            )
+            sectors.setdefault(sector_label, []).append(i)
 
-    sectors = {}
-    for i in range(dim):
-        ab_parities = bitstrings[0][i] ^ bitstrings[1][i]
-        sector_label = tuple(
-            (int.bit_count(int(ab_parities & q)) % 2
-             for q in bit_masks)
+        return sectors
+    elif parity_matrix.shape[1] == 2 * norb:
+        bit_powers = 2 ** (np.arange(2 * norb - 1, -1, -1))
+        reversed_interleaved_order = np.concatenate(
+            (np.arange(2 * norb - 2, -1, -2),
+             np.arange(2 * norb - 1, -1, -2),
+            )
         )
-        sectors.setdefault(sector_label, []).append(i)
+        bit_masks = parity_matrix[:, reversed_interleaved_order] @ bit_powers
+        bitstrings = ffsim.addresses_to_strings(range(dim), norb, nelec,
+            bitstring_type=ffsim.BitstringType.INT, concatenate=True)
 
-    return sectors
+        sectors = {}
+        for i in range(dim):
+            sector_label = tuple(
+                (int.bit_count(int(bitstrings[i] & q)) % 2
+                 for q in bit_masks)
+            )
+            sectors.setdefault(sector_label, []).append(i)
+
+        return sectors
+    else:
+        raise ValueError()
 
 
 def subspace_matrix(A, support):
@@ -187,9 +209,13 @@ if __name__=="__main__":
 
     maxdim = np.max([h.shape[0] for h in sector_hamiltonians.values()])
     print("Largest subspace dimension", maxdim)
-    zerodim = sector_hamiltonians[tuple([0] * parity_matrix.shape[0])].shape[0]
-    print("Zero parity subspace dimension", zerodim)
-
+    try:
+        zerodim = sector_hamiltonians[tuple([0] * parity_matrix.shape[0])].shape[0]
+        print("Zero parity subspace dimension", zerodim)
+    except KeyError:
+        print([(k, v.shape[0]) for k, v in sector_hamiltonians.items()])
+        # zerodim = sector_hamiltonians[tuple([1] * parity_matrix.shape[0])].shape[0]
+        # print("'111111' subspace dimension", zerodim)
 
     # joint_space_dimension = sum([w[0].shape[0] for w in sector_gs_pairs.values()])
     #
@@ -215,7 +241,7 @@ if __name__=="__main__":
             print("Not enough states to reach chemical accuracy, increase states_per_sector")
             quit()
     if args.K_start == "zero":
-        print("Using the all-even sector for the start")
+        print("Using the first sector for the start")
         print(list(sectors.keys())[0])
         K, v = selected_column_solver(h_subspace, e_fci + 0.0016, start="zero")
     elif args.K_start == "energy":
