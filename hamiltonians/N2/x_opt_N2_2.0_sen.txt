@@ -1,3 +1,4 @@
+{'molpath': 'hamiltonians/N2/N2_2.0000_D2h.chk', 'parity_matrix': 'hamiltonians/N2/parity_10_sens.txt', 'x0': None, 'verbose': True, 'reference': 'fci'}
 3.000316848216712734e-08
 1.334933710919963398e-07
 -1.586390244171443850e-02

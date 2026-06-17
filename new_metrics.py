@@ -87,14 +87,16 @@ def submatrix_eigenvalues_to_target(A: np.ndarray, e_target: float):
         v[0] = 1
         return 1, v
     else:
-        for vec_count in tqdm(range(2, A.shape[0] + 1)):
+        order = np.argsort(abs(v_full.flatten()))[::-1]
+        B = A[np.ix_(order, order)]
+        for vec_count in tqdm(range(2, B.shape[0] + 1)):
             # submatrix = A[:vec_count, :][:, :vec_count]
-            submatrix = A[:vec_count, :vec_count]
+            submatrix = B[:vec_count, :vec_count]
             # e, _ = scipy.sparse.linalg.eigsh(submatrix, which="SA", k=1)
             e, v = np.linalg.eigh(submatrix)
             energies[vec_count - 1] = e[0]
             if e[0] < e_target:
-                y = np.zeros(A.shape[0], dtype="complex")
+                y = np.zeros(B.shape[0], dtype="complex")
                 y[:vec_count] = v[:, 0]
                 return vec_count, y
 
@@ -118,6 +120,8 @@ def selected_column_solver(A: np.ndarray, e_target, thr=1e-8, start="zero"):
     current_vector[starting_index] = 1
     current_round = 0
     current_dimension = 1
+    if current_vector.T.conj() @ A @ current_vector < e_target:
+        return 1, current_vector
     while vector_count == -1:
         current_round += 1
         if current_round > 1000:
@@ -126,7 +130,7 @@ def selected_column_solver(A: np.ndarray, e_target, thr=1e-8, start="zero"):
         current_indices = np.where(abs(A @ current_vector) + abs(current_vector) > thr)
         print("dimension ", len(current_indices[0]))
         if len(current_indices[0]) == current_dimension:
-            Warning("stopping as nothing new found within thr")
+            print("stopping as nothing new found within thr")
             break
         current_dimension = len(current_indices[0])
         submatrix = A[np.ix_(current_indices[0], current_indices[0])]
@@ -206,6 +210,7 @@ if __name__=="__main__":
             lowest_sector_label = sector_label
     print("Lowest sector energy and label")
     print(smallest, lowest_sector_label)
+    print(smallest - e_fci)
 
     maxdim = np.max([h.shape[0] for h in sector_hamiltonians.values()])
     print("Largest subspace dimension", maxdim)

@@ -1,3 +1,4 @@
+{'molpath': 'hamiltonians/N2/N2_1.5000_D2h.chk', 'parity_matrix': 'hamiltonians/N2/parity_1.5_D2h_sen_quart.txt', 'x0': None, 'verbose': True, 'reference': 'fci'}
 -1.274619723737211382e-07
 8.426433954092281532e-09
 -1.553610579747493822e-02
