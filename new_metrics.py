@@ -10,6 +10,7 @@ from pathlib import Path
 from itertools import product
 from math import comb
 import matplotlib.pyplot as plt
+import bisect
 
 from chemistry import load_moldata, fcidump_data, CHEMICAL_PRECISION
 from new_optimize import parity_matrix_to_quasisymmetries, x_to_rotation, get_fci, commutator_cost
@@ -159,6 +160,24 @@ def orthogonalize_degenerate(w, V, tol=1e-10):
     return V_orth
 
 
+def find_first_negative(f, N):
+    # We create a range object from 1 to N.
+    # Note: range(1, N + 1) is lazy and takes O(1) memory.
+    domain = range(1, N + 1)
+
+    # We use a key function that returns True (1) when negative
+    # and False (0) when positive/zero.
+    # Because False < True, this creates a virtual sorted array: [0, 0, ..., 1, 1]
+    index = bisect.bisect_left(domain, x=True, key=lambda x: f(x) < 0)
+
+    # bisect_left returns the index in the 'domain' range object.
+    # If it returns N, it means it ran off the end and never found a negative.
+    if index < len(domain):
+        return domain[index]
+
+    return -1
+
+
 if __name__=="__main__":
     parser = argparse.ArgumentParser(
         description="Calculate the metrics")
@@ -267,10 +286,6 @@ if __name__=="__main__":
                                                 dtype="complex")
         full_space_vectors_in_sector[v, :] = sector_gs_pairs[k][1]
         full_space_vectors.append(full_space_vectors_in_sector)
-        # A = (full_space_vectors_in_sector.T.conj() @ full_space_vectors_in_sector)
-        # B = sector_gs_pairs[k][1].T.conj() @ sector_gs_pairs[k][1]
-        # print(np.linalg.norm(A - np.eye(A.shape[0])))
-        # print(np.linalg.norm(B - np.eye(B.shape[0])))
 
 
     full_space_vectors_cat = np.concatenate(full_space_vectors, axis=1)
@@ -279,18 +294,52 @@ if __name__=="__main__":
         print("Calculating K directly from FCI")
         coefficients = full_space_vectors_cat.T.conj() @ rotated_fcivec
         weights_order = np.argsort(abs(coefficients))[::-1]
-        for K in range(1, full_space_vectors_cat.shape[1]):
+        projected_fcivec = full_space_vectors_cat @ coefficients
+        projected_fcivec /= np.linalg.norm(projected_fcivec)
+        e_full = projected_fcivec.T.conj() @ rotated_h_linop @ projected_fcivec
+        if e_full > e_fci + CHEMICAL_PRECISION:
+            print(e_full)
+            raise ValueError("Not enough states per sector")
+
+        def f(K):
             compressed_coeffs = np.zeros_like(coefficients, dtype="complex")
             compressed_coeffs[weights_order[:K]] = coefficients[weights_order[:K]]
             compressed_coeffs /= np.linalg.norm(compressed_coeffs)
             compressed_fcivec = full_space_vectors_cat @ compressed_coeffs
-            overlap = abs(compressed_fcivec.T.conj() @ fcivec)**2
             e_K = compressed_fcivec.T.conj() @ rotated_h_linop @ compressed_fcivec
-            if e_K - e_fci < CHEMICAL_PRECISION:
-                print("K ",K)
-                quit()
+            return e_K - e_fci - CHEMICAL_PRECISION
+
+        K_min = find_first_negative(f, full_space_vectors_cat.shape[1])
+        if K_min < full_space_vectors_cat.shape[1] and K_min != -1:
+            print("K ", K_min)
+            all_state_labels = []
+            for sector_label, h_local in tqdm(sector_hamiltonians.items()):
+                labels = [(sector_label, i) for i in range(h_local.shape[0])]
+                all_state_labels.extend(labels)
+            print("Sector eigenstates used (sector and excitation level):")
+            for i in range(K_min):
+                print(all_state_labels[weights_order[i]])
+
+            quit()
         else:
-            raise RuntimeError()
+            print("not enough?")
+            quit()
+
+
+
+        # for K in range(1, full_space_vectors_cat.shape[1]):
+        #     compressed_coeffs = np.zeros_like(coefficients, dtype="complex")
+        #     compressed_coeffs[weights_order[:K]] = coefficients[weights_order[:K]]
+        #     compressed_coeffs /= np.linalg.norm(compressed_coeffs)
+        #     compressed_fcivec = full_space_vectors_cat @ compressed_coeffs
+        #     overlap = abs(compressed_fcivec.T.conj() @ fcivec)**2
+        #     e_K = compressed_fcivec.T.conj() @ rotated_h_linop @ compressed_fcivec
+        #     print(K, e_K - e_fci)
+        #     if e_K - e_fci < CHEMICAL_PRECISION:
+        #         print("K ",K)
+        #         quit()
+        # else:
+        #     raise RuntimeError()
 
 
 
