@@ -174,6 +174,7 @@ if __name__=="__main__":
     parser.add_argument("--born_huang", action="store_true",
                         help="calculate 'K' by increasing the number of states per sector,"
                              "up to --states_per_sector")
+    parser.add_argument("--min_born_huang", type=int, default=1)
     args = parser.parse_args()
 
     moldata = load_moldata(args.molpath)
@@ -276,7 +277,7 @@ if __name__=="__main__":
 
     if args.born_huang:
         print("Picking L states per sector and finding the energy")
-        for L in range(1, args.states_per_sector + 1):
+        for L in range(args.min_born_huang, args.states_per_sector + 1):
             print("L = {0:}".format(L), end=" ")
             vectors_stacked = np.concatenate(
                 [w[:, :L] for w in full_space_vectors],
