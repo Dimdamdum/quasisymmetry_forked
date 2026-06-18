@@ -297,6 +297,7 @@ if __name__=="__main__":
         projected_fcivec = full_space_vectors_cat @ coefficients
         projected_fcivec /= np.linalg.norm(projected_fcivec)
         e_full = projected_fcivec.T.conj() @ rotated_h_linop @ projected_fcivec
+        print(e_full)
         if e_full > e_fci + CHEMICAL_PRECISION:
             print(e_full)
             raise ValueError("Not enough states per sector")
@@ -313,8 +314,8 @@ if __name__=="__main__":
         if K_min < full_space_vectors_cat.shape[1] and K_min != -1:
             print("K ", K_min)
             all_state_labels = []
-            for sector_label, h_local in tqdm(sector_hamiltonians.items()):
-                labels = [(sector_label, i) for i in range(h_local.shape[0])]
+            for sector_label, sector_gs in tqdm(sector_gs_pairs.items()):
+                labels = [(sector_label, i) for i in range(sector_gs[1].shape[1])]
                 all_state_labels.extend(labels)
             print("Sector eigenstates used (sector and excitation level):")
             for i in range(K_min):
