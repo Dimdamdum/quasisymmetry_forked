@@ -235,6 +235,8 @@ if __name__=="__main__":
 
     f = commutator_cost(moldata, symmetries, fcivec)
     print("fci NC cost", f(x))
+    with open(outname, "a") as fp:
+        fp.write("fci NC cost {0:4.6f}\n".format(f(x)))
 
     print("qty of sectors ", len(sectors.keys()))
 
