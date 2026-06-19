@@ -8,3 +8,5 @@ Suggested usage:
 2. Find relevant quasisymmetries using `show_symmetries.py`
 3. Write down the ones you like as a binary matrix and optimize orbitals using `optimize_orbitals.py`
 4. Evaluate all sorts of things using `metrics.py`
+
+Note: for `metrics.py`, use the `--direct_K` key.

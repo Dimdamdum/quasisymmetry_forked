@@ -188,7 +188,7 @@ if __name__=="__main__":
                         help="path to the incidence matrix of symmetries")
     parser.add_argument("--U", help="x as orbital rotation",
                         default=None)
-    parser.add_argument("--states_per_sector", type=int, default=20)
+    parser.add_argument("--states_per_sector", type=int, default=500)
     parser.add_argument("--K_start", default="energy")
     parser.add_argument("--check_if_enough", action="store_true")
     parser.add_argument("--born_huang", action="store_true",
@@ -198,7 +198,7 @@ if __name__=="__main__":
     parser.add_argument("--direct_K", action="store_true")
     args = parser.parse_args()
 
-    outname = str(uuid4()) + ".txt"
+    outname = "result_" + str(uuid4())[:10] + ".txt"
     with open(outname, "a") as fp:
         fp.write(str(vars(args)) + "\n")
 
