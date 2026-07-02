@@ -24,7 +24,7 @@ def load_moldata(molpath) -> ffsim.MolecularData:
         mf = pyscf.scf.RHF(mol)
         mf.update_from_chk(molpath)
         moldata = ffsim.MolecularData.from_scf(mf)
-    elif p.suffix == ".FCIDUMP":
+    elif p.suffix == ".FCIDUMP" or str(p).endswith("FCIDUMP"):
         moldata = ffsim.MolecularData.from_fcidump(molpath)
     else:
         raise ValueError("hamiltonian must be a pyscf checkfile or an fcidump")
@@ -33,7 +33,7 @@ def load_moldata(molpath) -> ffsim.MolecularData:
 
 def fcidump_data(molpath):
     p = Path(molpath)
-    if p.suffix == ".FCIDUMP":
+    if p.suffix == ".FCIDUMP" or str(p).endswith("FCIDUMP"):
         return pyscf.tools.fcidump.read(molpath,
                                             verbose=False)
     elif p.suffix == ".chk":
