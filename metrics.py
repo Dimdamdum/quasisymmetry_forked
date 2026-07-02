@@ -14,7 +14,7 @@ import bisect
 from uuid import uuid4
 
 from chemistry import load_moldata, fcidump_data, CHEMICAL_PRECISION
-from optimize_orbitals import parity_matrix_to_quasisymmetries, x_to_rotation, get_fci, commutator_cost
+from optimize_symmetries import parity_matrix_to_quasisymmetries, x_to_rotation, get_fci, commutator_cost
 
 
 def symmetry_sectors(parity_matrix, norb, nelec):
