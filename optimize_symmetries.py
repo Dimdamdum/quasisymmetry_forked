@@ -271,9 +271,8 @@ if __name__=="__main__":
     # mandatory arguments
     parser.add_argument("molpath",
                         help="path to the Hamiltonian (PySCF checkfile)")
-    parser.add_argument("--parity",
+    parser.add_argument("parity",
                         help="path to the incidence matrix of symmetries")
-    parser.add_argument("--beam", action="store_true")
 
     # optional arguments
     parser.add_argument("--reference",
@@ -289,89 +288,39 @@ if __name__=="__main__":
 
     args = parser.parse_args()
 
-    if args.parity is not None and args.beam == False:
+    moldata = load_moldata(args.molpath)
+    dumpdata = fcidump_data(args.molpath)
 
-        moldata = load_moldata(args.molpath)
-        dumpdata = fcidump_data(args.molpath)
-
-        parity_matrix = np.loadtxt(args.parity, dtype=int)
-        symmetries = parity_matrix_to_quasisymmetries(parity_matrix,
-                                                      moldata.norb,
-                                                      moldata.nelec)
-        if args.reference == "fci":
-            _, state = get_fci(dumpdata)
-        elif args.reference == "hf":
-            state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
-        else:
-            raise ValueError("reference must be fci or hf")
-
-        f = commutator_cost(moldata, symmetries, state)
-
-        if args.x0 is None:
-            x0 = np.zeros(comb(moldata.norb, 2))
-        else:
-            x0 = np.loadtxt(args.x0)
-
-        print("before optimization: {0:4.6f}".format(f(x0)))
-        res = scipy.optimize.minimize(f, x0, method="L-BFGS-B",
-                                      options={"maxiter": 100},
-                                      callback=callback if args.verbose else None)
-        print(res.message)
-        print("optimized: {0:4.6f}".format(res.fun))
-        if args.outname is not None:
-            outname = args.outname
-        else:
-            outname = time.strftime("%Y%m%d_%H%M%S", time.localtime()) + ".txt"
-
-        with open(outname,
-                  "a", newline="") as fp:
-            fp.write(str(vars(args)) + "\n")
-            np.savetxt(fp, res.x)
-
-    elif args.parity is None and args.beam == True:
-        # mol = of.MolecularData(filename=args.molpath, data_directory=".")
-        # print(mol)
-        mol = fcidump_openfermion.molecular_data_from_fcidump(args.molpath)
-        #
-        # if not hasattr(mol, "_pyscf_data"):
-        #     mol = openfermionpyscf.run_pyscf(mol)
-
-        H = of.get_fermion_operator(mol.get_molecular_hamiltonian())
-        n_qubits = of.count_qubits(H)
-        qubit_hamiltonian = of.jordan_wigner(H)
-        sparse_qubit_op = of.get_sparse_operator(qubit_hamiltonian, n_qubits)
-
-        dumpdata = fcidump_data(args.molpath)
-        if args.reference == "fci":
-            # e, gs, gs_info = get_fci_state_openfermion(mol)
-            e, state = get_fci(dumpdata, flatten=False)
-            ref_state = expand_state(mol, state)
-        else:
-            raise NotImplementedError()
-
-        if args.cost_function == "NC":
-            cost = lambda s_list: comm_sq_exp_fast(s_list, sparse_qubit_op,
-                                                              ref_state, n_qubits)
-        else:
-            raise NotImplementedError()
-
-        beam_score = lambda s: (-1) * cost(s)
-
-        n_sym = n_qubits // 2
-        beam_symmetries = beam.BeamSearch_Symmetries(qubit_hamiltonian,
-                                                     target_rank=n_sym,
-                                                     beam_width=16,
-                                                     heavy_core_fraction=0.95,
-                                                     include_pairwise_products=True,
-                                                     pairwise_seed_terms=12,
-                                                     seed_with_exact_symmetries=True,
-                                                     score_func=beam_score
-                                                     )
-        for s in beam_symmetries:
-            print(s)
-
-
-
-
+    parity_matrix = np.loadtxt(args.parity, dtype=int)
+    symmetries = parity_matrix_to_quasisymmetries(parity_matrix,
+                                                  moldata.norb,
+                                                  moldata.nelec)
+    if args.reference == "fci":
+        _, state = get_fci(dumpdata)
+    elif args.reference == "hf":
+        state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
     else:
-        raise ValueError("Either use the --beam keyword or use --parity and specify a parity matrix")
+        raise ValueError("reference must be fci or hf")
+
+    f = commutator_cost(moldata, symmetries, state)
+
+    if args.x0 is None:
+        x0 = np.zeros(comb(moldata.norb, 2))
+    else:
+        x0 = np.loadtxt(args.x0)
+
+    print("before optimization: {0:4.6f}".format(f(x0)))
+    res = scipy.optimize.minimize(f, x0, method="L-BFGS-B",
+                                  options={"maxiter": 100},
+                                  callback=callback if args.verbose else None)
+    print(res.message)
+    print("optimized: {0:4.6f}".format(res.fun))
+    if args.outname is not None:
+        outname = args.outname
+    else:
+        outname = time.strftime("%Y%m%d_%H%M%S", time.localtime()) + ".txt"
+
+    with open(outname,
+              "a", newline="") as fp:
+        fp.write(str(vars(args)) + "\n")
+        np.savetxt(fp, res.x)
