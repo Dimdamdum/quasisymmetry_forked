@@ -4,21 +4,21 @@ This is a summary of the module that I am making by stitching together Praveen�
 
 #### make\_pyscf\_hamiltonian.py
 
-Can be used to produce a bunch of example Hamiltonians from a hard-coded list. Probably not a good practice but whatever.
+Can be used to produce a bunch of example Hamiltonians from a hard-coded list.
 
 #### show\_symmetries.py
 
-Given an electronic structure Hamiltonian, calculates the quartets and shows them as a plot
+Given an electronic structure Hamiltonian, calculates the NC scores for quartets and shows them as a heatmap plot.
 
 #### find\_pauli\_symmetries.py
 
-Finds symmetries via beam search (or something else that you want)  
+Finds symmetries via beam search  
 input:
 
 1. Hamiltonian  
 2. the reference cost function (“fci”, “hf”, “cisd”)  
 3. cost function  
-4. keyword –senquart that constrains the symmetries to seniorities and quartets.
+4. keyword --senquart that constrains the symmetries to seniorities and quartets.
 
 Output:
 
@@ -28,7 +28,7 @@ Output:
 
 Input arguments and keywords:
 
-1. Hamiltonian. Checkfile or FCIDUMP or of.QubitOperator (?).  
+1. Hamiltonian. Checkfile or FCIDUMP. In the future I might add support for of.QubitOperator.  
 2. Parity matrix of the symmetries  
 3. Reference state: \--reference, “fci”, “hf”, “cisd” (defaults to fci)  
 4. Cost function: variance to ref, NC to ref (defaults to NC)  
@@ -36,8 +36,7 @@ Input arguments and keywords:
 
 Returns:
 
-1. Optimized orbitals, if the symmetries were supplied with parity  
-2. List of Pauli operators, if we used beam search.
+1. Optimized parameters for an orbital rotation saved as a text file.
 
 #### metrics.py
 
@@ -52,4 +51,6 @@ Outputs:
 1. Decoupled energy  
 2. K: number of sector eigenstates needed to reach chemical accuracy  
 3. Which sectors do these eigenstates come from
+
+All of this is saved in a text file.
 
