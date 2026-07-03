@@ -18,7 +18,7 @@ if __name__=="__main__":
     h = ffsim.linear_operator(moldata.hamiltonian,
                   norb=moldata.norb, nelec=moldata.nelec)
 
-    rot = np.loadtxt(args.rot)
+    rot = np.loadtxt(args.rot, comments="{")
     U = x_to_rotation(rot, moldata.norb)
 
     rotated_hamiltonian = moldata.hamiltonian.rotated(U)
