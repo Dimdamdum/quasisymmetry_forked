@@ -1,0 +1,3 @@
+[submodule "external/QuasiSymmetries"]
+	path = external/QuasiSymmetries
+	url = https://github.com/Praveen91299/QuasiSymmetries
