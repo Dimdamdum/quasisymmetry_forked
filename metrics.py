@@ -15,6 +15,12 @@ from uuid import uuid4
 
 from chemistry import load_moldata, fcidump_data, CHEMICAL_PRECISION
 from optimize_symmetries import parity_matrix_to_quasisymmetries, x_to_rotation, get_fci, commutator_cost
+from src.energy_diagnostics import (
+    coupled_energy_perturbation,
+    reference_coupled_energy_k,
+    sector_data_from_gs_pairs,
+    state_labels_for_columns,
+)
 
 
 def symmetry_sectors(parity_matrix, norb, nelec):
@@ -190,6 +196,12 @@ if __name__=="__main__":
                         default=None)
     parser.add_argument("--states_per_sector", type=int, default=500)
     parser.add_argument("--check_if_enough", action="store_true")
+    parser.add_argument(
+        "--coupled_energy_method",
+        choices=("reference", "perturbation"),
+        default="reference",
+        help="K_coupled selection: FCI-coefficient greedy (reference) or PT-screened greedy (perturbation)",
+    )
     args = parser.parse_args()
 
     p = Path(args.molpath)
@@ -294,51 +306,65 @@ if __name__=="__main__":
 
 
     full_space_vectors_cat = np.concatenate(full_space_vectors, axis=1)
+    h_apply = lambda v: rotated_h_linop @ v
 
-
-
-
-    print("Calculating K directly from FCI")
-    coefficients = full_space_vectors_cat.T.conj() @ rotated_fcivec
-    weights_order = np.argsort(abs(coefficients))[::-1]
-    projected_fcivec = full_space_vectors_cat @ coefficients
-    projected_fcivec /= np.linalg.norm(projected_fcivec)
-    e_full = projected_fcivec.T.conj() @ rotated_h_linop @ projected_fcivec
-    print(e_full)
-    if e_full > e_fci + CHEMICAL_PRECISION:
-        print(e_full)
+    if args.coupled_energy_method == "perturbation":
+        print("Calculating K via PT-screened coupled-energy greedy selection")
+        sector_data = sector_data_from_gs_pairs(
+            sectors, sector_gs_pairs, rotated_h_linop.shape[0]
+        )
+        e_coupled, k_coupled, converged, chosen_keys = coupled_energy_perturbation(
+            h_apply,
+            sector_data,
+            e_exact=e_fci,
+            tol=CHEMICAL_PRECISION,
+        )
+        print("E_coupled", e_coupled)
+        print("K", k_coupled)
+        print("converged", converged)
         with open(outname, "a") as fp:
-            fp.write("Not enough states per sector")
+            fp.write("coupled_energy_method perturbation\n")
+            fp.write("E_coupled {0:4.6f}\n".format(e_coupled))
+            fp.write("K {0:}\n".format(k_coupled))
+            fp.write("converged {0:}\n".format(converged))
+        if converged:
+            print("Sector eigenstates used (sector and excitation level):")
+            with open(outname, "a") as fp:
+                for key in chosen_keys:
+                    print(key)
+                    fp.write(str(key) + "\n")
+        else:
+            print("PT coupled-energy did not converge within chemical precision")
+        quit()
+
+    print("Calculating K directly from FCI (reference wavefunction)")
+    k_min, e_coupled, converged, weights_order = reference_coupled_energy_k(
+        h_apply,
+        full_space_vectors_cat,
+        rotated_fcivec,
+        e_fci,
+        chemical_precision=CHEMICAL_PRECISION,
+    )
+    print("E_coupled (full projection)", e_coupled)
+    if k_min is None:
+        with open(outname, "a") as fp:
+            fp.write("coupled_energy_method reference\n")
+            fp.write("Not enough states per sector\n")
         print("Not enough states per sector")
         quit()
 
-    def f(K):
-        compressed_coeffs = np.zeros_like(coefficients, dtype="complex")
-        compressed_coeffs[weights_order[:K]] = coefficients[weights_order[:K]]
-        compressed_coeffs /= np.linalg.norm(compressed_coeffs)
-        compressed_fcivec = full_space_vectors_cat @ compressed_coeffs
-        e_K = compressed_fcivec.T.conj() @ rotated_h_linop @ compressed_fcivec
-        return (e_K - e_fci - CHEMICAL_PRECISION).real
+    print("K ", k_min)
+    with open(outname, "a") as fp:
+        fp.write("coupled_energy_method reference\n")
+        fp.write("K {0:}\n".format(k_min))
 
-    K_min = find_first_negative(f, full_space_vectors_cat.shape[1])
-    if K_min < full_space_vectors_cat.shape[1] and K_min != -1:
-        print("K ", K_min)
-        with open(outname, "a") as fp:
-            fp.write("K {0:}\n".format(K_min))
-
-        all_state_labels = []
-        for sector_label, sector_gs in tqdm(sector_gs_pairs.items()):
-            labels = [(sector_label, i) for i in range(sector_gs[1].shape[1])]
-            all_state_labels.extend(labels)
-        print("Sector eigenstates used (sector and excitation level):")
-        with open(outname, "a") as fp:
-            for i in range(K_min):
-                print(all_state_labels[weights_order[i]])
-                fp.write(str(all_state_labels[weights_order[i]]) + "\n")
-        quit()
-    else:
-        print("not enough?")
-        quit()
+    all_state_labels = state_labels_for_columns(sector_gs_pairs)
+    print("Sector eigenstates used (sector and excitation level):")
+    with open(outname, "a") as fp:
+        for i in range(k_min):
+            print(all_state_labels[weights_order[i]])
+            fp.write(str(all_state_labels[weights_order[i]]) + "\n")
+    quit()
 
 
 
