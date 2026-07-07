@@ -54,3 +54,10 @@ Outputs:
 
 All of this is saved in a text file.
 
+If you want to run this in parallel, call:
+
+`mpiexec -n 5 python -m mpi4py.futures metrics.py [arguments]`
+
+on a desktop and
+
+`srun -n 5 python -m mpi4py.futures metrics.py [arguments]`

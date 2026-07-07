@@ -12,6 +12,9 @@ from math import comb
 import matplotlib.pyplot as plt
 import bisect
 from uuid import uuid4
+from mpi4py import MPI
+from mpi4py.futures import MPIPoolExecutor
+
 
 from chemistry import load_moldata, fcidump_data, CHEMICAL_PRECISION
 from optimize_symmetries import parity_matrix_to_quasisymmetries, x_to_rotation, get_fci, commutator_cost
@@ -184,6 +187,39 @@ def find_first_negative(f, N):
 
     return -1
 
+def solve_eigs(data):
+    # mpi4py can't pickle the rotated_h_linop, so we will be constructing it on each worker?
+    moldata = data["moldata"]
+    rotated_h = data["rotated_h"]
+    sector_bitstrings = data["sector_bitstrings"]
+    # if args.U is not None:
+    #     x = np.loadtxt(args.U, comments=["#", "{"])
+    #     U = x_to_rotation(x, moldata.norb)
+    # else:
+    #     U = np.eye(moldata.norb)
+    #     x = np.zeros(comb(moldata.norb, 2))
+    #
+    # rotated_h = moldata.hamiltonian.rotated(U)
+    rotated_h_linop = ffsim.linear_operator(rotated_h,
+                                            norb=moldata.norb,
+                                            nelec=moldata.nelec)
+
+    h_subspace = subspace_matrix(rotated_h_linop, sector_bitstrings)
+    if data["states_per_sector"] <= h_subspace.shape[0] - 2:
+        w, v = scipy.sparse.linalg.eigsh(
+            h_subspace, which="SA", k=data["states_per_sector"])
+        v = v[:, np.argsort(w)]
+        w = np.sort(w)
+        v_orth = orthogonalize_degenerate(w, v)
+        sector_eigs = w, v_orth
+    else:
+        sector_eigs = np.linalg.eigh(h_subspace)
+
+    return {"sector_label": data["sector_label"],
+            "sector_eigs": sector_eigs,
+            "rank": MPI.COMM_WORLD.Get_rank(),
+            "hostname": MPI.Get_processor_name()}
+
 
 if __name__=="__main__":
     parser = argparse.ArgumentParser(
@@ -248,33 +284,68 @@ if __name__=="__main__":
 
     print("qty of sectors ", len(sectors.keys()))
 
-    print("Creating subspace Hamiltonians")
+    # print("Creating subspace Hamiltonians")
 
-    sector_hamiltonians = {}
-    for sector_label, sector_bitstrings in tqdm(sectors.items()):
-        sector_hamiltonians[sector_label] = subspace_matrix(rotated_h_linop,
-                                                            sector_bitstrings)
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()  # this process's ID, 0..size-1
+    size = comm.Get_size()  # total number of processes
+    print("rank and size", rank, size)
 
-    sector_gs_pairs = {}
+    # solver = lambda x: solve_eigs(rotated_h_linop, x)
 
-    smallest = 0
-    lowest_sector_label = None
-    print("Calculating sector eigenvalues")
-    for sector_label, h_local in tqdm(sector_hamiltonians.items()):
-        if args.states_per_sector <= h_local.shape[0] - 2:
-            w, v = scipy.sparse.linalg.eigsh(
-                h_local, which="SA", k=args.states_per_sector)
-            v = v[:, np.argsort(w)]
-            w = np.sort(w)
-            v_orth = orthogonalize_degenerate(w, v)
-            sector_gs_pairs[sector_label] = w, v_orth
-        else:
-            sector_gs_pairs[sector_label] = np.linalg.eigh(h_local)
-        if np.min(sector_gs_pairs[sector_label][0]) < smallest:
-            smallest = np.min(sector_gs_pairs[sector_label][0])
-            lowest_sector_label = sector_label
-    print("Lowest sector energy and label")
-    print(smallest, lowest_sector_label)
+    tasks = [{"moldata": moldata,
+              "rotated_h": rotated_h,
+              "states_per_sector": args.states_per_sector,
+              "sector_label": k,
+              "sector_bitstrings": v
+              }
+             for k, v in sectors.items()]
+
+    sector_eigs = {}
+
+
+    with MPIPoolExecutor() as executor:
+        for r in executor.map(solve_eigs, tasks):
+            print(r["sector_label"], r["sector_eigs"][0][:2], r["hostname"], r["rank"])
+            label = tuple(r["sector_label"])
+            sector_eigs[label]= r["sector_eigs"]
+
+
+    # sector_hamiltonians = {}
+    # for sector_label, sector_bitstrings in tqdm(sectors.items()):
+    #     sector_hamiltonians[sector_label] = subspace_matrix(rotated_h_linop,
+    #                                                         sector_bitstrings)
+
+
+
+
+
+
+    # smallest = 0
+    # lowest_sector_label = None
+    # print("Calculating sector eigenvalues")
+    # for sector_label, h_local in tqdm(sector_hamiltonians.items()):
+    #     if args.states_per_sector <= h_local.shape[0] - 2:
+    #         w, v = scipy.sparse.linalg.eigsh(
+    #             h_local, which="SA", k=args.states_per_sector)
+    #         v = v[:, np.argsort(w)]
+    #         w = np.sort(w)
+    #         v_orth = orthogonalize_degenerate(w, v)
+    #         sector_gs_pairs[sector_label] = w, v_orth
+    #     else:
+    #         sector_gs_pairs[sector_label] = np.linalg.eigh(h_local)
+    #     if np.min(sector_gs_pairs[sector_label][0]) < smallest:
+    #         smallest = np.min(sector_gs_pairs[sector_label][0])
+    #         lowest_sector_label = sector_label
+    # print("Lowest sector energy and label")
+    # print(smallest, lowest_sector_label)
+
+    sector_gs_energies = []
+    for w, v in sector_eigs.items():
+        sector_gs_energies.append(np.min(w))
+
+    smallest = np.min(sector_gs_energies)
+
     de_dec = smallest - e_fci
     print("Decoupled error ", smallest - e_fci)
     with open(outname, "a") as fp:
@@ -286,22 +357,25 @@ if __name__=="__main__":
             fp.write("K 1")
         quit()
 
-    maxdim = np.max([h.shape[0] for h in sector_hamiltonians.values()])
+    # quit()
+
+    # maxdim = np.max([h.shape[0] for h in sector_hamiltonians.values()])
+    maxdim = [len(sector_bistrings) for sector_bistrings in sectors.values()]
     print("Largest subspace dimension", maxdim)
     with open(outname, "a") as fp:
         fp.write("maxdim {0:}\n".format(maxdim))
-    try:
-        zerodim = sector_hamiltonians[tuple([0] * parity_matrix.shape[0])].shape[0]
-        print("Zero parity subspace dimension", zerodim)
-    except KeyError:
-        print([(k, v.shape[0]) for k, v in sector_hamiltonians.items()])
+    # try:
+    #     zerodim = sector_hamiltonians[tuple([0] * parity_matrix.shape[0])].shape[0]
+    #     print("Zero parity subspace dimension", zerodim)
+    # except KeyError:
+    #     print([(k, v.shape[0]) for k, v in sector_hamiltonians.items()])
 
     full_space_vectors = []
     for k, v in sectors.items():
         full_space_vectors_in_sector = np.zeros((rotated_h_linop.shape[0],
-                                                 sector_gs_pairs[k][0].shape[0]),
+                                                 sector_eigs[k][0].shape[0]),
                                                 dtype="complex")
-        full_space_vectors_in_sector[v, :] = sector_gs_pairs[k][1]
+        full_space_vectors_in_sector[v, :] = sector_eigs[k][1]
         full_space_vectors.append(full_space_vectors_in_sector)
 
 
@@ -311,7 +385,7 @@ if __name__=="__main__":
     if args.coupled_energy_method == "perturbation":
         print("Calculating K via PT-screened coupled-energy greedy selection")
         sector_data = sector_data_from_gs_pairs(
-            sectors, sector_gs_pairs, rotated_h_linop.shape[0]
+            sectors, sector_eigs, rotated_h_linop.shape[0]
         )
         e_coupled, k_coupled, converged, chosen_keys = coupled_energy_perturbation(
             h_apply,
@@ -358,13 +432,16 @@ if __name__=="__main__":
         fp.write("coupled_energy_method reference\n")
         fp.write("K {0:}\n".format(k_min))
 
-    all_state_labels = state_labels_for_columns(sector_gs_pairs)
+    all_state_labels = state_labels_for_columns(sector_eigs)
     print("Sector eigenstates used (sector and excitation level):")
     with open(outname, "a") as fp:
         for i in range(k_min):
             print(all_state_labels[weights_order[i]])
             fp.write(str(all_state_labels[weights_order[i]]) + "\n")
-    quit()
+
+    used_states = [all_state_labels[weights_order[i]] for i in range(k_min)]
+    unique_sectors_used = set([w[0] for w in used_states])
+    print("# of sectors {0:}".format(len(unique_sectors_used)))
 
 
 
