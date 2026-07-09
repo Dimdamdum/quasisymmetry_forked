@@ -9,10 +9,14 @@ import pyscf
 import pyscf.fci
 import openfermion as of
 import openfermionpyscf
+import json
+from uuid import uuid4
+
 
 from typing import Callable, Any, Union
 from math import comb
 from functools import cache, reduce
+from pathlib import Path
 
 from chemistry import load_moldata, fcidump_data
 
@@ -544,70 +548,107 @@ if __name__=="__main__":
 
     # ── optimise ──────────────────────────────────────────────────────────────
     t_start = time.time()
-    if args.cost_function in ("NC", "variance"):
-        res = optimize_fcidump(
-            input_path=args.molpath,
-            symmetry_op=symmetry_op,
-            reference_fn=reference_fn,
-            output_path=args.output_fcidump,
-            x0=x0,
-            method="L-BFGS-B",
-            maxiter=args.optimizer_maxiter,
-            verbose=args.verbose,
-            cost=args.cost_function,
-        )
-    elif args.cost_function == "switching_sector":
-        res, switching_history = optimize_with_sector_switching(
-            moldata,
-            sectors,
-            x0,
-            maxiter=args.optimizer_maxiter,
-            max_switches=args.sector_switch_maxiter,
-            callback=callback if args.verbose else None,
-        )
-        for i, step in enumerate(switching_history):
-            print(
-                "switch step {0}: {1} -> {2}; optimized={3:4.12f}; rescanned={4:4.12f}".format(
-                    i,
-                    step["start_sector"],
-                    step["best_sector_after_rescan"],
-                    step["optimized_energy"],
-                    step["best_energy_after_rescan"],
-                )
+    if args.optimizer_maxiter > 0:
+        if args.cost_function in ("NC", "variance"):
+            res = optimize_fcidump(
+                input_path=args.molpath,
+                symmetry_op=symmetry_op,
+                reference_fn=reference_fn,
+                output_path=args.output_fcidump,
+                x0=x0,
+                method="L-BFGS-B",
+                maxiter=args.optimizer_maxiter,
+                verbose=args.verbose,
+                cost=args.cost_function,
             )
+        elif args.cost_function == "switching_sector":
+            res, switching_history = optimize_with_sector_switching(
+                moldata,
+                sectors,
+                x0,
+                maxiter=args.optimizer_maxiter,
+                max_switches=args.sector_switch_maxiter,
+                callback=callback if args.verbose else None,
+            )
+            for i, step in enumerate(switching_history):
+                print(
+                    "switch step {0}: {1} -> {2}; optimized={3:4.12f}; rescanned={4:4.12f}".format(
+                        i,
+                        step["start_sector"],
+                        step["best_sector_after_rescan"],
+                        step["optimized_energy"],
+                        step["best_energy_after_rescan"],
+                    )
+                )
+        else:
+            res = scipy.optimize.minimize(
+                f,
+                x0,
+                method="L-BFGS-B",
+                options={"maxiter": args.optimizer_maxiter},
+                callback=callback if args.verbose else None,
+            )
+
+        if args.cost_function not in ("NC", "variance") and args.output_fcidump is not None:
+            U_opt = x_to_rotation(res.x, moldata.norb)
+            rh = moldata.hamiltonian.rotated(U_opt)
+            ffsim.MolecularData(
+                atom=moldata.atom, basis=moldata.basis, spin=moldata.spin, nelec=moldata.nelec,
+                hf_energy=moldata.hf_energy, norb=moldata.norb, core_energy=moldata.core_energy,
+                one_body_integrals=rh.one_body_tensor,
+                two_body_integrals=rh.two_body_tensor,
+            ).to_fcidump(args.output_fcidump)
+
+        elapsed = time.time() - t_start
+        print(res.message)
+        print("optimized: {0:4.6f}".format(res.fun))
     else:
-        res = scipy.optimize.minimize(
-            f,
-            x0,
-            method="L-BFGS-B",
-            options={"maxiter": args.optimizer_maxiter},
-            callback=callback if args.verbose else None,
-        )
+        print("Optimizer maxiter = 0, returning data with one matrix")
+        res = scipy.optimize.OptimizeResult()
+        res.x = x0
+        res.fun = cost_before
+        res.success = False
+        res.nit = 0
+        res.nfev = 0
+        elapsed = 0
+        res.message = "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT"
 
-    if args.cost_function not in ("NC", "variance") and args.output_fcidump is not None:
-        U_opt = x_to_rotation(res.x, moldata.norb)
-        rh = moldata.hamiltonian.rotated(U_opt)
-        ffsim.MolecularData(
-            atom=moldata.atom, basis=moldata.basis, spin=moldata.spin, nelec=moldata.nelec,
-            hf_energy=moldata.hf_energy, norb=moldata.norb, core_energy=moldata.core_energy,
-            one_body_integrals=rh.one_body_tensor,
-            two_body_integrals=rh.two_body_tensor,
-        ).to_fcidump(args.output_fcidump)
+    p = Path(args.molpath)
+    if args.outname:
+        outname = args.outname
+    else:
+        outname = ("OO_" +
+                   p.parts[-1] + "_" +
+                   time.strftime("%Y%m%d_%H%M%S", time.localtime())
+                   + "_" + str(uuid4())[:6] + ".json")
 
-    elapsed = time.time() - t_start
-    print(res.message)
-    print("optimized: {0:4.6f}".format(res.fun))
+    out_data = {}
+    out_data["cost_before"] = cost_before
+    out_data["cost_after"] = res.fun
+    out_data["converged"] = res.success
+    out_data["nit"] = res.nit
+    out_data["nfev"] = res.nfev
+    out_data["elapsed"] = elapsed
+    out_data["message"] = res.message
+    if switching_history is not None:
+        out_data["switching_history"] = switching_history
+    out_data["rotation"] = res.x.tolist()
 
-    outname = args.outname if args.outname else time.strftime("%Y%m%d_%H%M%S", time.localtime()) + ".txt"
-    with open(outname, "a", newline="") as fp:
-        fp.write(str(vars(args)) + "\n")
-        fp.write(f"# cost_before={cost_before:.6e}  cost_after={res.fun:.6e}  "
-                 f"converged={res.success}  nit={res.nit}  nfev={res.nfev}  "
-                 f"elapsed_s={elapsed:.1f}  message={res.message}\n")
-        if switching_history is not None:
-            for step in switching_history:
-                fp.write(str(step) + "\n")
-        np.savetxt(fp, res.x)
+    full_output = vars(args) | out_data
+
+    with open(outname, "a") as fp:
+        json.dump(full_output, fp, indent=2)
+
+    # # if args.outname else time.strftime("%Y%m%d_%H%M%S", time.localtime()) + ".txt"
+    # with open(outname, "a", newline="") as fp:
+    #     fp.write(str(vars(args)) + "\n")
+    #     fp.write(f"# cost_before={cost_before:.6e}  cost_after={res.fun:.6e}  "
+    #              f"converged={res.success}  nit={res.nit}  nfev={res.nfev}  "
+    #              f"elapsed_s={elapsed:.1f}  message={res.message}\n")
+    #     if switching_history is not None:
+    #         for step in switching_history:
+    #             fp.write(str(step) + "\n")
+    #     np.savetxt(fp, res.x)
 
     # ── orbene_npy (optional) ─────────────────────────────────────────────────
     if args.orbene_npy:

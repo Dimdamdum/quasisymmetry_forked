@@ -14,6 +14,7 @@ import bisect
 from uuid import uuid4
 from mpi4py import MPI
 from mpi4py.futures import MPIPoolExecutor
+import time
 
 
 from chemistry import load_moldata, fcidump_data, CHEMICAL_PRECISION
@@ -162,12 +163,7 @@ def solve_eigs(data):
 if __name__=="__main__":
     parser = argparse.ArgumentParser(
         description="Calculate the metrics")
-    parser.add_argument("molpath",
-        help="path to the Hamiltonian (PySCF .chk or .FCIDUMP)")
-    parser.add_argument("parity_matrix",
-                        help="path to the incidence matrix of symmetries")
-    parser.add_argument("--U", help="x as orbital rotation",
-                        default=None)
+    parser.add_argument("input_data", help="JSON you got from optimize_symmetries.py")
     parser.add_argument("--states_per_sector", type=int, default=500)
     parser.add_argument("--check_if_enough", action="store_true")
     parser.add_argument(
@@ -178,16 +174,21 @@ if __name__=="__main__":
     )
     args = parser.parse_args()
 
-    p = Path(args.molpath)
+    with open(args.input_data, "r") as fp:
+        input_data = json.load(fp)
 
-    outname = "result_" + p.parts[-1] + "_" + str(uuid4())[:6] + ".txt"
-    with open(outname, "a") as fp:
-        fp.write(str(vars(args)) + "\n")
+    p = Path(input_data["molpath"])
 
-    moldata = load_moldata(args.molpath)
-    dumpdata = fcidump_data(args.molpath)
+    outname = ("metrics_" +
+               p.parts[-1] + "_" + str(uuid4())[:8] + ".json")
+    out_data = {}
+    out_data["args"] = vars(args)
+    out_data["OO_data"] = input_data
 
-    parity_matrix = np.loadtxt(args.parity_matrix, dtype=int)
+    moldata = load_moldata(input_data["molpath"])
+    dumpdata = fcidump_data(input_data["molpath"])
+
+    parity_matrix = np.loadtxt(input_data["parity"], dtype=int)
     symmetries = parity_matrix_to_quasisymmetries(parity_matrix,
                                                   moldata.norb,
                                                   moldata.nelec)
@@ -196,12 +197,8 @@ if __name__=="__main__":
 
     sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
 
-    if args.U is not None:
-        x = np.loadtxt(args.U, comments=["#", "{"])
-        U = x_to_rotation(x, moldata.norb)
-    else:
-        U = np.eye(moldata.norb)
-        x = np.zeros(comb(moldata.norb, 2))
+    x = np.array(input_data["rotation"])
+    U = x_to_rotation(x, moldata.norb)
 
     rotated_h = moldata.hamiltonian.rotated(U)
     rotated_h_linop = ffsim.linear_operator(rotated_h,
@@ -210,15 +207,9 @@ if __name__=="__main__":
 
     e_fci, fcivec = get_fci(dumpdata)
     print("FCI ", e_fci)
-    with open(outname, "a") as fp:
-        fp.write("E_FCI {0:4.6f}\n".format(e_fci))
+    out_data["E_FCI"] = e_fci
     rotated_fcivec = ffsim.apply_orbital_rotation(fcivec, U, norb=moldata.norb,
                                                   nelec=moldata.nelec)
-
-    f = commutator_cost(moldata, symmetries, fcivec)
-    print("fci NC cost", f(x))
-    with open(outname, "a") as fp:
-        fp.write("fci NC cost {0:4.6f}\n".format(f(x)))
 
     print("qty of sectors ", len(sectors.keys()))
 
@@ -250,22 +241,10 @@ if __name__=="__main__":
 
     smallest = np.min(sector_gs_energies)
 
-    # sector_dims = [len(sector_bistrings) for sector_bistrings in sectors.values()]
-    # maxdim = max(sector_dims)
-    # print("Largest subspace dimension", maxdim)
-    # with open(outname, "a") as fp:
-    #     fp.write("maxdim {0:}\n".format(maxdim))
-
     de_dec = smallest - e_fci
     print("Decoupled error ", smallest - e_fci)
-    with open(outname, "a") as fp:
-        fp.write("E_decoupled {0:4.6f}\n".format(smallest))
-        fp.write("dE {0:4.6f}\n".format(de_dec))
-    # if de_dec < 0.0016:
-    #     print("K = 1")
-    #     with open(outname, "a") as fp:
-    #         fp.write("K 1")
-    #     quit()
+    out_data["E_decoupled"] = smallest
+    out_data["dE"] = de_dec
 
     h_apply = lambda v: rotated_h_linop @ v
 
@@ -283,16 +262,9 @@ if __name__=="__main__":
         print("E_coupled", e_coupled)
         print("K", k_coupled)
         print("converged", converged)
-        with open(outname, "a") as fp:
-            fp.write("E_coupled {0:4.6f}\n".format(e_coupled))
-            fp.write("K {0:}\n".format(k_coupled))
-            fp.write("converged {0:}\n".format(converged))
-        # if converged:
-            # print("Sector eigenstates used (sector and excitation level):")
-            # with open(outname, "a") as fp:
-            #     for key in chosen_keys:
-            #         print(key)
-            #         fp.write(str(key) + "\n")
+        out_data["E_coupled"] = e_coupled
+        out_data["K"] = k_coupled
+        out_data["converged"] = converged
         if not converged:
             print("PT coupled-energy did not converge within chemical precision")
 
@@ -317,45 +289,36 @@ if __name__=="__main__":
             chemical_precision=CHEMICAL_PRECISION,
         )
         print("E_coupled (full projection)", e_coupled)
+        out_data["K"] = k_min
         if k_min is None:
-            with open(outname, "a") as fp:
-                fp.write("coupled_energy_method reference\n")
-                fp.write("Not enough states per sector\n")
             print("Not enough states per sector")
             quit()
 
         print("K ", k_min)
-        with open(outname, "a") as fp:
-            fp.write("K {0:}\n".format(k_min))
 
         all_state_labels = state_labels_for_columns(sector_eigs)
-
-        # with open(outname, "a") as fp:
-        #     for i in range(k_min):
-        #         print(all_state_labels[weights_order[i]])
-        #         fp.write(str(all_state_labels[weights_order[i]]) + "\n")
 
         chosen_keys = [all_state_labels[weights_order[i]] for i in range(k_min)]
 
     print("Sector eigenstates used (sector and excitation level):")
-    with open(outname, "a") as fp:
-        fp.write("Sector eigenstates used (sector and excitation level):\n")
-        for key in chosen_keys:
-            print(key)
-            fp.write(str(key) + "\n")
+    for key in chosen_keys:
+        print(key)
+    out_data["sector_eigenstates"] = chosen_keys
 
-        unique_sectors_used = set([w[0] for w in chosen_keys])
-        total_dim_of_relevant_sectors = 0
-        print("Relevant sectors and their dimensions:")
-        fp.write("Relevant sectors and their dimensions:\n")
-        for s in unique_sectors_used:
-            print(s, len(sectors[s]))
-            fp.write(str(s) + " " + str(len(sectors[s])) + "\n")
-            total_dim_of_relevant_sectors += len(sectors[s])
-        print("{0:} sectors in total".format(len(unique_sectors_used)))
-        fp.write("{0:} sectors in total\n".format(len(unique_sectors_used)))
-        print("Total dimension: {0:}".format(total_dim_of_relevant_sectors))
-        fp.write("Total dimension: {0:}\n".format(total_dim_of_relevant_sectors))
+    unique_sectors_used = list(set([w[0] for w in chosen_keys]))
+    total_dim_of_relevant_sectors = 0
+    print("Relevant sectors and their dimensions:")
+    for s in unique_sectors_used:
+        print(s, len(sectors[s]))
+        total_dim_of_relevant_sectors += len(sectors[s])
+    print("{0:} sectors in total".format(len(unique_sectors_used)))
+    print("Total dimension: {0:}".format(total_dim_of_relevant_sectors))
+
+    out_data["relevant_sectors"] = unique_sectors_used
+    out_data["relevant_sectors_count"] = len(unique_sectors_used)
+    out_data["relevant_sectors_total_dim"] = total_dim_of_relevant_sectors
+    with open(outname, "a") as fp:
+        json.dump(out_data, fp, indent=2)
 
 
 
