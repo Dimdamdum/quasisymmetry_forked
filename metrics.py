@@ -24,63 +24,7 @@ from src.energy_diagnostics import (
     sector_data_from_gs_pairs,
     state_labels_for_columns,
 )
-
-
-def symmetry_sectors(parity_matrix, norb, nelec):
-    dim = comb(norb, nelec[0]) * comb(norb, nelec[1])
-    if parity_matrix.shape[1] == norb:
-        bitstrings = ffsim.addresses_to_strings(range(dim), norb, nelec,
-            bitstring_type=ffsim.BitstringType.INT, concatenate=False)
-        bit_powers = 2**(np.arange(norb - 1, -1, -1))
-        bit_masks = parity_matrix[:, ::-1] @ bit_powers
-
-        sectors = {}
-        for i in range(dim):
-            ab_parities = bitstrings[0][i] ^ bitstrings[1][i]
-            sector_label = tuple(
-                (int.bit_count(int(ab_parities & q)) % 2
-                 for q in bit_masks)
-            )
-            sectors.setdefault(sector_label, []).append(i)
-
-        return sectors
-    elif parity_matrix.shape[1] == 2 * norb:
-        bit_powers = 2 ** (np.arange(2 * norb - 1, -1, -1))
-        reversed_interleaved_order = np.concatenate(
-            (np.arange(2 * norb - 2, -1, -2),
-             np.arange(2 * norb - 1, -1, -2),
-            )
-        )
-        bit_masks = parity_matrix[:, reversed_interleaved_order] @ bit_powers
-        bitstrings = ffsim.addresses_to_strings(range(dim), norb, nelec,
-            bitstring_type=ffsim.BitstringType.INT, concatenate=True)
-
-        sectors = {}
-        for i in range(dim):
-            sector_label = tuple(
-                (int.bit_count(int(bitstrings[i] & q)) % 2
-                 for q in bit_masks)
-            )
-            sectors.setdefault(sector_label, []).append(i)
-
-        return sectors
-    else:
-        raise ValueError()
-
-
-def subspace_matrix(A, support):
-    # dim = support.shape[0]
-    dim = len(support)
-
-    A_sub = np.zeros((dim, dim), dtype="complex")
-
-    for i, big_index in enumerate(support):
-        x = np.zeros(A.shape[0], dtype="complex")
-        x[big_index] = 1
-        y = A @ x
-        A_sub[:, i] = y[support]
-
-    return A_sub
+from src.sector_utils import symmetry_sectors, subspace_matrix
 
 
 def submatrix_eigenvalues_to_target(A: np.ndarray, e_target: float):
@@ -412,7 +356,6 @@ if __name__=="__main__":
         fp.write("{0:} sectors in total\n".format(len(unique_sectors_used)))
         print("Total dimension: {0:}".format(total_dim_of_relevant_sectors))
         fp.write("Total dimension: {0:}\n".format(total_dim_of_relevant_sectors))
-
 
 
 

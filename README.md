@@ -31,8 +31,16 @@ Input arguments and keywords:
 1. Hamiltonian. Checkfile or FCIDUMP. In the future I might add support for of.QubitOperator.  
 2. Parity matrix of the symmetries  
 3. Reference state: \--reference, “fci”, “hf”, “cisd” (defaults to fci)  
-4. Cost function: variance to ref, NC to ref (defaults to NC)  
+4. Cost function: variance to ref, NC to ref (defaults to NC), or a decoupled-sector energy objective  
 5. x0: optional initial guess for orbital rotations
+
+Supported cost functions:
+
+1. `NC`: non-commutator cost against the chosen reference state.
+2. `variance`: symmetry variance against the chosen reference state.
+3. `decoupled`: expensive objective that rescans all sectors at every orbital-optimization step and minimizes the best single-sector energy.
+4. `fixed_sector`: cheaper objective that optimizes one sector. If `--fixed_sector` is not supplied, the initial lowest-energy sector is selected automatically.
+5. `switching_sector`: compromise objective. It selects the initial lowest-energy sector, optimizes it, rescans all sectors, switches if another sector is lower, and repeats until the selected sector stops changing or `--sector_switch_maxiter` is reached.
 
 Returns:
 

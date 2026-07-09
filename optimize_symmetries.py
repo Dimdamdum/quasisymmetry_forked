@@ -18,6 +18,13 @@ from chemistry import load_moldata, fcidump_data
 
 from src.state_utils import get_cisd_gs, get_fci_state_openfermion
 from src.bs import beam
+from src.decoupled_energy import (
+    best_sector,
+    make_decoupled_energy_cost,
+    make_fixed_sector_energy_cost,
+    optimize_with_sector_switching,
+)
+from src.sector_utils import symmetry_sectors
 import fcidump_openfermion
 
 
@@ -248,6 +255,13 @@ def callback(intermediate_result: scipy.optimize.OptimizeResult) -> None:
     print("{0:4.6f}".format(intermediate_result.fun))
 
 
+def parse_sector_label(text):
+    """Parse a command-line sector label such as ``0,1,0``."""
+    if not text.strip():
+        raise ValueError("empty sector label")
+    return tuple(int(part.strip()) for part in text.split(","))
+
+
 def comm_sq_exp_fast(sym_ops: list[of.QubitOperator], H: Any, state: np.ndarray, n_qubits: int, verbose: bool = False) -> Union[float, complex]:
     """
     Compute sum_k <state| ( i[H, S_k] )^2 |state> efficiently.
@@ -422,8 +436,29 @@ if __name__=="__main__":
                         help="path to the incidence matrix of symmetries")
     parser.add_argument("--seniority", action="store_true")
     parser.add_argument("--reference", default="fci")   # fci or hf
-    parser.add_argument("--cost_function", default="NC")   # NC or variance
+    parser.add_argument(
+        "--cost_function",
+        choices=("NC", "variance", "decoupled", "fixed_sector", "switching_sector"),
+        default="NC",
+    )
     parser.add_argument("--x0", default=None)
+    parser.add_argument(
+        "--fixed_sector",
+        default=None,
+        help="sector label for fixed_sector mode, e.g. 0,1,0. If omitted, use the best initial sector.",
+    )
+    parser.add_argument(
+        "--optimizer_maxiter",
+        type=int,
+        default=100,
+        help="maximum L-BFGS-B iterations per optimization stage",
+    )
+    parser.add_argument(
+        "--sector_switch_maxiter",
+        type=int,
+        default=5,
+        help="maximum sector switches for switching_sector mode",
+    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--outname", default=None)
     parser.add_argument("--output_fcidump", default=None,
@@ -468,30 +503,97 @@ if __name__=="__main__":
     # solver a second time.
     reference_fn = lambda md: state
 
-    # ── nc_before (needed for logging) ────────────────────────────────────────
+    # ── cost before optimization ──────────────────────────────────────────────
     x0 = np.loadtxt(args.x0) if args.x0 else np.zeros(comb(moldata.norb, 2))
+    switching_history = None
+
     if args.cost_function == "NC":
-        f_before = commutator_cost(moldata, sym_linops, state)
+        f = commutator_cost(moldata, sym_linops, state)
     elif args.cost_function == "variance":
-        f_before = variance_cost(moldata, sym_linops, state)
+        f = variance_cost(moldata, sym_linops, state)
+    elif args.cost_function == "decoupled":
+        if args.parity is None:
+            parser.error("decoupled cost requires a parity matrix")
+        sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
+        f = make_decoupled_energy_cost(moldata, sectors)
+    elif args.cost_function == "fixed_sector":
+        if args.parity is None:
+            parser.error("fixed_sector cost requires a parity matrix")
+        sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
+        if args.fixed_sector is None:
+            initial_energy, sector_label, _ = best_sector(moldata, sectors, x0)
+            print("Selected initial fixed sector:", sector_label)
+            print("Initial fixed-sector energy: {0:4.12f}".format(initial_energy))
+        else:
+            sector_label = parse_sector_label(args.fixed_sector)
+        if sector_label not in sectors:
+            raise ValueError(f"sector {sector_label} is not present in this determinant space")
+        f = make_fixed_sector_energy_cost(moldata, sectors[sector_label])
+    elif args.cost_function == "switching_sector":
+        if args.parity is None:
+            parser.error("switching_sector cost requires a parity matrix")
+        sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
+        initial_energy, initial_label, _ = best_sector(moldata, sectors, x0)
+        print("Initial switching sector:", initial_label)
+        f = None
     else:
-        raise ValueError("cost must be 'NC' or 'variance'")
-    nc_before = f_before(x0)
-    print("before optimization: {0:4.6f}".format(nc_before))
+        raise ValueError("unknown cost function")
+
+    cost_before = initial_energy if args.cost_function == "switching_sector" else f(x0)
+    print("before optimization: {0:4.6f}".format(cost_before))
 
     # ── optimise ──────────────────────────────────────────────────────────────
     t_start = time.time()
-    res = optimize_fcidump(
-        input_path=args.molpath,
-        symmetry_op=symmetry_op,
-        reference_fn=reference_fn,
-        output_path=args.output_fcidump,
-        x0=x0,
-        method="L-BFGS-B",
-        maxiter=100,
-        verbose=args.verbose,
-        cost=args.cost_function,
-    )
+    if args.cost_function in ("NC", "variance"):
+        res = optimize_fcidump(
+            input_path=args.molpath,
+            symmetry_op=symmetry_op,
+            reference_fn=reference_fn,
+            output_path=args.output_fcidump,
+            x0=x0,
+            method="L-BFGS-B",
+            maxiter=args.optimizer_maxiter,
+            verbose=args.verbose,
+            cost=args.cost_function,
+        )
+    elif args.cost_function == "switching_sector":
+        res, switching_history = optimize_with_sector_switching(
+            moldata,
+            sectors,
+            x0,
+            maxiter=args.optimizer_maxiter,
+            max_switches=args.sector_switch_maxiter,
+            callback=callback if args.verbose else None,
+        )
+        for i, step in enumerate(switching_history):
+            print(
+                "switch step {0}: {1} -> {2}; optimized={3:4.12f}; rescanned={4:4.12f}".format(
+                    i,
+                    step["start_sector"],
+                    step["best_sector_after_rescan"],
+                    step["optimized_energy"],
+                    step["best_energy_after_rescan"],
+                )
+            )
+    else:
+        res = scipy.optimize.minimize(
+            f,
+            x0,
+            method="L-BFGS-B",
+            options={"maxiter": args.optimizer_maxiter},
+            callback=callback if args.verbose else None,
+        )
+
+    if args.cost_function not in ("NC", "variance") and args.output_fcidump is not None:
+        U_opt = x_to_rotation(res.x, moldata.norb)
+        rh = moldata.hamiltonian.rotated(U_opt)
+        ffsim.MolecularData(
+            atom=moldata.atom, basis=moldata.basis, spin=moldata.spin, nelec=moldata.nelec,
+            hf_energy=moldata.hf_energy, norb=moldata.norb, core_energy=moldata.core_energy,
+            one_body_integrals=rh.one_body_tensor,
+            two_body_integrals=rh.two_body_tensor,
+        ).to_fcidump(args.output_fcidump)
+
     elapsed = time.time() - t_start
     print(res.message)
     print("optimized: {0:4.6f}".format(res.fun))
@@ -499,9 +601,12 @@ if __name__=="__main__":
     outname = args.outname if args.outname else time.strftime("%Y%m%d_%H%M%S", time.localtime()) + ".txt"
     with open(outname, "a", newline="") as fp:
         fp.write(str(vars(args)) + "\n")
-        fp.write(f"# nc_before={nc_before:.6e}  nc_after={res.fun:.6e}  "
+        fp.write(f"# cost_before={cost_before:.6e}  cost_after={res.fun:.6e}  "
                  f"converged={res.success}  nit={res.nit}  nfev={res.nfev}  "
                  f"elapsed_s={elapsed:.1f}  message={res.message}\n")
+        if switching_history is not None:
+            for step in switching_history:
+                fp.write(str(step) + "\n")
         np.savetxt(fp, res.x)
 
     # ── orbene_npy (optional) ─────────────────────────────────────────────────
