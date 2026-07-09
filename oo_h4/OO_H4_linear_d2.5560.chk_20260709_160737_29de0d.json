@@ -1,0 +1,30 @@
+{
+  "molpath": "hamiltonians/H4/H4_linear_d2.5560.chk",
+  "parity": "hamiltonians/H4/parity_4_sens.txt",
+  "seniority": false,
+  "reference": "hf",
+  "cost_function": "variance",
+  "x0": null,
+  "fixed_sector": null,
+  "optimizer_maxiter": 0,
+  "sector_switch_maxiter": 5,
+  "verbose": false,
+  "outname": null,
+  "output_fcidump": null,
+  "orbene_npy": null,
+  "cost_before": 0.0,
+  "cost_after": 0.0,
+  "converged": false,
+  "nit": 0,
+  "nfev": 0,
+  "elapsed": 0,
+  "message": "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT",
+  "rotation": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ]
+}

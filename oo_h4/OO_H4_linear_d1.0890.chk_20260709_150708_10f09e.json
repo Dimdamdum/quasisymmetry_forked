@@ -1,0 +1,30 @@
+{
+  "molpath": "hamiltonians/H4/H4_linear_d1.0890.chk",
+  "parity": "hamiltonians/H4/LNE_2_out_of_8_so.txt",
+  "seniority": false,
+  "reference": "fci",
+  "cost_function": "decoupled",
+  "x0": null,
+  "fixed_sector": null,
+  "optimizer_maxiter": 100,
+  "sector_switch_maxiter": 5,
+  "verbose": false,
+  "outname": null,
+  "output_fcidump": null,
+  "orbene_npy": null,
+  "cost_before": -2.091909897393231,
+  "cost_after": -2.0933726977793694,
+  "converged": true,
+  "nit": 4,
+  "nfev": 42,
+  "elapsed": 5.561575174331665,
+  "message": "CONVERGENCE: NORM OF PROJECTED GRADIENT <= PGTOL",
+  "rotation": [
+    -1.2645283906300578e-07,
+    -0.03505165826569263,
+    8.898391661621357e-08,
+    -4.048683179462039e-08,
+    -2.0971766077953356e-07,
+    -1.913417439469377e-08
+  ]
+}

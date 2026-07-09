@@ -1,0 +1,144 @@
+{
+  "args": {
+    "input_data": "./oo_h4_/OO_H4_linear_d2.5560.chk_20260709_155550_e39a6e.json",
+    "states_per_sector": 500,
+    "check_if_enough": false,
+    "coupled_energy_method": "reference"
+  },
+  "OO_data": {
+    "molpath": "hamiltonians/H4/H4_linear_d2.5560.chk",
+    "parity": "hamiltonians/H4/parity_4_sens.txt",
+    "seniority": false,
+    "reference": "fci",
+    "cost_function": "fixed_sector",
+    "x0": null,
+    "fixed_sector": null,
+    "optimizer_maxiter": 100,
+    "sector_switch_maxiter": 5,
+    "verbose": false,
+    "outname": null,
+    "output_fcidump": null,
+    "orbene_npy": null,
+    "cost_before": -1.8625885688691082,
+    "cost_after": -1.8625885688691082,
+    "converged": true,
+    "nit": 0,
+    "nfev": 7,
+    "elapsed": 0.8764638900756836,
+    "message": "CONVERGENCE: NORM OF PROJECTED GRADIENT <= PGTOL",
+    "rotation": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "E_FCI": -1.8711680598733103,
+  "E_decoupled": -1.8625885688691082,
+  "dE": 0.008579491004202078,
+  "K": 8,
+  "sector_eigenstates": [
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      0
+    ],
+    [
+      [
+        1,
+        1,
+        1,
+        1
+      ],
+      5
+    ],
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      1
+    ],
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      2
+    ],
+    [
+      [
+        1,
+        1,
+        1,
+        1
+      ],
+      4
+    ],
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      5
+    ],
+    [
+      [
+        1,
+        0,
+        1,
+        0
+      ],
+      1
+    ],
+    [
+      [
+        0,
+        1,
+        0,
+        1
+      ],
+      1
+    ]
+  ],
+  "relevant_sectors": [
+    [
+      0,
+      1,
+      0,
+      1
+    ],
+    [
+      1,
+      0,
+      1,
+      0
+    ],
+    [
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      0,
+      0,
+      0
+    ]
+  ],
+  "relevant_sectors_count": 4,
+  "relevant_sectors_total_dim": 20
+}

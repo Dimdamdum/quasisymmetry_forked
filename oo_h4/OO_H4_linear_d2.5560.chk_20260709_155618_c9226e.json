@@ -1,0 +1,45 @@
+{
+  "molpath": "hamiltonians/H4/H4_linear_d2.5560.chk",
+  "parity": "hamiltonians/H4/LNE_2_out_of_8_so.txt",
+  "seniority": false,
+  "reference": "hf",
+  "cost_function": "switching_sector",
+  "x0": null,
+  "fixed_sector": null,
+  "optimizer_maxiter": 100,
+  "sector_switch_maxiter": 5,
+  "verbose": false,
+  "outname": null,
+  "output_fcidump": null,
+  "orbene_npy": null,
+  "cost_before": -1.5639301715635074,
+  "cost_after": -1.8640677150293938,
+  "converged": true,
+  "nit": 3,
+  "nfev": 49,
+  "elapsed": 2.865656852722168,
+  "message": "CONVERGENCE: NORM OF PROJECTED GRADIENT <= PGTOL",
+  "switching_history": [
+    {
+      "start_sector": [
+        1,
+        0
+      ],
+      "start_energy": -1.5639301715635074,
+      "optimized_energy": -1.8640677150293938,
+      "best_sector_after_rescan": [
+        1,
+        0
+      ],
+      "best_energy_after_rescan": -1.8640677150293938
+    }
+  ],
+  "rotation": [
+    -1.8701065018703073e-07,
+    -0.680077990485618,
+    -5.447065599528907e-07,
+    -3.3444746924907545e-07,
+    -6.108365995228206e-08,
+    -3.5748879048157895e-07
+  ]
+}

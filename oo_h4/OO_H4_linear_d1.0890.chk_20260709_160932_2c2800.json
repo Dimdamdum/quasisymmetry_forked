@@ -1,0 +1,30 @@
+{
+  "molpath": "hamiltonians/H4/H4_linear_d1.0890.chk",
+  "parity": "hamiltonians/H4/LNE_2_out_of_8_so.txt",
+  "seniority": false,
+  "reference": "fci",
+  "cost_function": "NC",
+  "x0": null,
+  "fixed_sector": null,
+  "optimizer_maxiter": 0,
+  "sector_switch_maxiter": 5,
+  "verbose": false,
+  "outname": null,
+  "output_fcidump": null,
+  "orbene_npy": null,
+  "cost_before": 0.3403419172278319,
+  "cost_after": 0.3403419172278319,
+  "converged": false,
+  "nit": 0,
+  "nfev": 0,
+  "elapsed": 0,
+  "message": "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT",
+  "rotation": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ]
+}

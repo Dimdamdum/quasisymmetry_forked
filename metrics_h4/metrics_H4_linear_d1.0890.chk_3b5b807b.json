@@ -1,0 +1,141 @@
+{
+  "args": {
+    "input_data": "./oo_h4_/OO_H4_linear_d1.0890.chk_20260709_160930_bddc65.json",
+    "states_per_sector": 500,
+    "check_if_enough": false,
+    "coupled_energy_method": "reference"
+  },
+  "OO_data": {
+    "molpath": "hamiltonians/H4/H4_linear_d1.0890.chk",
+    "parity": "hamiltonians/H4/LNE_2_out_of_8_so.txt",
+    "seniority": false,
+    "reference": "hf",
+    "cost_function": "switching_sector",
+    "x0": null,
+    "fixed_sector": null,
+    "optimizer_maxiter": 0,
+    "sector_switch_maxiter": 5,
+    "verbose": false,
+    "outname": null,
+    "output_fcidump": null,
+    "orbene_npy": null,
+    "cost_before": -2.091909897393231,
+    "cost_after": -2.091909897393231,
+    "converged": false,
+    "nit": 0,
+    "nfev": 0,
+    "elapsed": 0,
+    "message": "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT",
+    "rotation": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "E_FCI": -2.141545844719291,
+  "E_decoupled": -2.0919098973932306,
+  "dE": 0.04963594732606058,
+  "K": 11,
+  "sector_eigenstates": [
+    [
+      [
+        1,
+        1
+      ],
+      0
+    ],
+    [
+      [
+        1,
+        0
+      ],
+      5
+    ],
+    [
+      [
+        0,
+        1
+      ],
+      5
+    ],
+    [
+      [
+        1,
+        0
+      ],
+      4
+    ],
+    [
+      [
+        0,
+        1
+      ],
+      4
+    ],
+    [
+      [
+        0,
+        0
+      ],
+      5
+    ],
+    [
+      [
+        0,
+        0
+      ],
+      0
+    ],
+    [
+      [
+        0,
+        0
+      ],
+      4
+    ],
+    [
+      [
+        1,
+        1
+      ],
+      5
+    ],
+    [
+      [
+        0,
+        1
+      ],
+      8
+    ],
+    [
+      [
+        1,
+        0
+      ],
+      8
+    ]
+  ],
+  "relevant_sectors": [
+    [
+      1,
+      0
+    ],
+    [
+      1,
+      1
+    ],
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      1
+    ]
+  ],
+  "relevant_sectors_count": 4,
+  "relevant_sectors_total_dim": 36
+}

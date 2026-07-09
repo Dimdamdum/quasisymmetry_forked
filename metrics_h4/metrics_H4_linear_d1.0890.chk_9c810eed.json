@@ -1,0 +1,120 @@
+{
+  "args": {
+    "input_data": "./oo_h4/OO_H4_linear_d1.0890.chk_20260709_150543_318322.json",
+    "states_per_sector": 500,
+    "check_if_enough": false,
+    "coupled_energy_method": "reference"
+  },
+  "OO_data": {
+    "molpath": "hamiltonians/H4/H4_linear_d1.0890.chk",
+    "parity": "hamiltonians/H4/parity_4_sens.txt",
+    "seniority": false,
+    "reference": "hf",
+    "cost_function": "NC",
+    "x0": null,
+    "fixed_sector": null,
+    "optimizer_maxiter": 100,
+    "sector_switch_maxiter": 5,
+    "verbose": false,
+    "outname": null,
+    "output_fcidump": null,
+    "orbene_npy": null,
+    "cost_before": 0.49272239045074273,
+    "cost_after": 0.4823044441848191,
+    "converged": true,
+    "nit": 4,
+    "nfev": 42,
+    "elapsed": 3.7634942531585693,
+    "message": "CONVERGENCE: NORM OF PROJECTED GRADIENT <= PGTOL",
+    "rotation": [
+      4.679921743055774e-09,
+      -0.028144493649947772,
+      -1.2209965060033043e-08,
+      -1.2066454504875882e-08,
+      0.017046760426951798,
+      2.8155688827669837e-09
+    ]
+  },
+  "E_FCI": -2.141545844719291,
+  "E_decoupled": -2.1023475508285303,
+  "dE": 0.039198293890760905,
+  "K": 6,
+  "sector_eigenstates": [
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      0
+    ],
+    [
+      [
+        1,
+        1,
+        1,
+        1
+      ],
+      5
+    ],
+    [
+      [
+        1,
+        1,
+        1,
+        1
+      ],
+      4
+    ],
+    [
+      [
+        1,
+        0,
+        1,
+        0
+      ],
+      1
+    ],
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      1
+    ],
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      4
+    ]
+  ],
+  "relevant_sectors": [
+    [
+      1,
+      0,
+      1,
+      0
+    ],
+    [
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      0,
+      0,
+      0
+    ]
+  ],
+  "relevant_sectors_count": 3,
+  "relevant_sectors_total_dim": 16
+}

@@ -1,0 +1,123 @@
+{
+  "args": {
+    "input_data": "./oo_h4_/OO_H4_linear_d2.5560.chk_20260709_155545_c3149e.json",
+    "states_per_sector": 500,
+    "check_if_enough": false,
+    "coupled_energy_method": "reference"
+  },
+  "OO_data": {
+    "molpath": "hamiltonians/H4/H4_linear_d2.5560.chk",
+    "parity": "hamiltonians/H4/parity_4_sens.txt",
+    "seniority": false,
+    "reference": "fci",
+    "cost_function": "variance",
+    "x0": null,
+    "fixed_sector": null,
+    "optimizer_maxiter": 100,
+    "sector_switch_maxiter": 5,
+    "verbose": false,
+    "outname": null,
+    "output_fcidump": null,
+    "orbene_npy": null,
+    "cost_before": 3.0097288484973967,
+    "cost_after": 2.9439443082125205,
+    "converged": true,
+    "nit": 3,
+    "nfev": 35,
+    "elapsed": 0.11530137062072754,
+    "message": "CONVERGENCE: NORM OF PROJECTED GRADIENT <= PGTOL",
+    "rotation": [
+      -6.506469901033984e-09,
+      0.09047906585171395,
+      1.496188256464242e-08,
+      3.624891779257859e-08,
+      0.08876228815969218,
+      -1.4766988288384976e-07
+    ]
+  },
+  "E_FCI": -1.8711680598733103,
+  "E_decoupled": -1.8625885688691084,
+  "dE": 0.008579491004201856,
+  "K": 7,
+  "sector_eigenstates": [
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      1
+    ],
+    [
+      [
+        1,
+        1,
+        1,
+        1
+      ],
+      5
+    ],
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      2
+    ],
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      5
+    ],
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      0
+    ],
+    [
+      [
+        1,
+        1,
+        1,
+        1
+      ],
+      4
+    ],
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      3
+    ]
+  ],
+  "relevant_sectors": [
+    [
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      0,
+      0,
+      0
+    ]
+  ],
+  "relevant_sectors_count": 2,
+  "relevant_sectors_total_dim": 12
+}

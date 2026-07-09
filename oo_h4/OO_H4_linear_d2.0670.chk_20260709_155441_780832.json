@@ -1,0 +1,58 @@
+{
+  "molpath": "hamiltonians/H4/H4_linear_d2.0670.chk",
+  "parity": "hamiltonians/H4/LNE_2_out_of_8_so.txt",
+  "seniority": false,
+  "reference": "fci",
+  "cost_function": "switching_sector",
+  "x0": null,
+  "fixed_sector": null,
+  "optimizer_maxiter": 100,
+  "sector_switch_maxiter": 5,
+  "verbose": false,
+  "outname": null,
+  "output_fcidump": null,
+  "orbene_npy": null,
+  "cost_before": -1.6308644639548682,
+  "cost_after": -1.8549714409827163,
+  "converged": true,
+  "nit": 4,
+  "nfev": 42,
+  "elapsed": 6.7864837646484375,
+  "message": "CONVERGENCE: NORM OF PROJECTED GRADIENT <= PGTOL",
+  "switching_history": [
+    {
+      "start_sector": [
+        1,
+        1
+      ],
+      "start_energy": -1.6308644639548682,
+      "optimized_energy": -1.7055058154632006,
+      "best_sector_after_rescan": [
+        1,
+        0
+      ],
+      "best_energy_after_rescan": -1.8282829016075552
+    },
+    {
+      "start_sector": [
+        1,
+        0
+      ],
+      "start_energy": -1.8282829016075552,
+      "optimized_energy": -1.8549714409827163,
+      "best_sector_after_rescan": [
+        1,
+        0
+      ],
+      "best_energy_after_rescan": -1.8549714409827163
+    }
+  ],
+  "rotation": [
+    -3.5036062073145085e-07,
+    -0.6421221797275319,
+    -5.49071650842169e-07,
+    -4.6435024277516207e-07,
+    -1.667612311740413e-07,
+    2.9484701322724553e-07
+  ]
+}

@@ -1,0 +1,126 @@
+{
+  "args": {
+    "input_data": "./oo_h4_/OO_H4_linear_d2.0670.chk_20260709_155307_4221b5.json",
+    "states_per_sector": 500,
+    "check_if_enough": false,
+    "coupled_energy_method": "reference"
+  },
+  "OO_data": {
+    "molpath": "hamiltonians/H4/H4_linear_d2.0670.chk",
+    "parity": "hamiltonians/H4/parity_4_sens.txt",
+    "seniority": false,
+    "reference": "hf",
+    "cost_function": "NC",
+    "x0": null,
+    "fixed_sector": null,
+    "optimizer_maxiter": 100,
+    "sector_switch_maxiter": 5,
+    "verbose": false,
+    "outname": null,
+    "output_fcidump": null,
+    "orbene_npy": null,
+    "cost_before": 0.9332711754490064,
+    "cost_after": 0.48764734186098235,
+    "converged": true,
+    "nit": 8,
+    "nfev": 91,
+    "elapsed": 7.239894866943359,
+    "message": "CONVERGENCE: NORM OF PROJECTED GRADIENT <= PGTOL",
+    "rotation": [
+      -2.2636967421635293e-07,
+      -0.5412158686559506,
+      1.9203170629316112e-07,
+      -1.4725226193082377e-07,
+      -0.521642892377645,
+      -7.349188885657056e-08
+    ]
+  },
+  "E_FCI": -1.8916953153091782,
+  "E_decoupled": -1.8590370502068547,
+  "dE": 0.0326582651023235,
+  "K": 6,
+  "sector_eigenstates": [
+    [
+      [
+        0,
+        0,
+        0,
+        0
+      ],
+      0
+    ],
+    [
+      [
+        1,
+        1,
+        1,
+        1
+      ],
+      2
+    ],
+    [
+      [
+        1,
+        0,
+        1,
+        0
+      ],
+      1
+    ],
+    [
+      [
+        0,
+        1,
+        0,
+        1
+      ],
+      1
+    ],
+    [
+      [
+        0,
+        1,
+        0,
+        1
+      ],
+      3
+    ],
+    [
+      [
+        1,
+        0,
+        1,
+        0
+      ],
+      3
+    ]
+  ],
+  "relevant_sectors": [
+    [
+      0,
+      1,
+      0,
+      1
+    ],
+    [
+      1,
+      0,
+      1,
+      0
+    ],
+    [
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      0,
+      0,
+      0,
+      0
+    ]
+  ],
+  "relevant_sectors_count": 4,
+  "relevant_sectors_total_dim": 20
+}
