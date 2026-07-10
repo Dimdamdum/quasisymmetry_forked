@@ -603,7 +603,7 @@ if __name__=="__main__":
         print(res.message)
         print("optimized: {0:4.6f}".format(res.fun))
     else:
-        print("Optimizer maxiter = 0, returning data with one matrix")
+        print("Optimizer maxiter = 0, returning data for canonical orbitals")
         res = scipy.optimize.OptimizeResult()
         res.x = x0
         res.fun = cost_before
