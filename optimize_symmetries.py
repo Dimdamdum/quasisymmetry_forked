@@ -28,7 +28,16 @@ try:
         best_sector,
         make_decoupled_energy_cost,
         make_fixed_sector_energy_cost,
+        make_clifford_decoupled_energy_cost,
+        make_clifford_fixed_sector_energy_cost,
         optimize_with_sector_switching,
+        optimize_with_clifford_sector_switching,
+        scan_clifford_sector_energies,
+    )
+    from src.clifford_sectors import (
+        load_symmetry_manifest,
+        prepare_clifford_context,
+        z_symmetries_from_parity_matrix,
     )
     from src.sector_utils import symmetry_sectors
     from src.state_utils import get_cisd_gs, get_fci_state_openfermion  # noqa: F401
@@ -42,7 +51,14 @@ except ImportError as exc:
     best_sector = None
     make_decoupled_energy_cost = None
     make_fixed_sector_energy_cost = None
+    make_clifford_decoupled_energy_cost = None
+    make_clifford_fixed_sector_energy_cost = None
     optimize_with_sector_switching = None
+    optimize_with_clifford_sector_switching = None
+    scan_clifford_sector_energies = None
+    load_symmetry_manifest = None
+    prepare_clifford_context = None
+    z_symmetries_from_parity_matrix = None
     symmetry_sectors = None
 else:
     _FCI_STACK_ERROR = None
@@ -486,6 +502,17 @@ if __name__=="__main__":
         choices=("NC", "variance", "decoupled", "fixed_sector", "switching_sector"),
         default="NC",
     )
+    parser.add_argument(
+        "--sector_backend",
+        choices=("determinant", "clifford"),
+        default="determinant",
+        help="sector representation used by the energy objectives",
+    )
+    parser.add_argument(
+        "--symmetry_manifest",
+        default=None,
+        help="ordered Z-product symmetry manifest for the Clifford backend",
+    )
     parser.add_argument("--x0", default=None)
     parser.add_argument(
         "--fixed_sector",
@@ -497,6 +524,13 @@ if __name__=="__main__":
         type=int,
         default=100,
         help="maximum L-BFGS-B iterations per optimization stage",
+    )
+    parser.add_argument(
+        "--maxiter",
+        dest="optimizer_maxiter",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="alias for --optimizer_maxiter",
     )
     parser.add_argument(
         "--sector_switch_maxiter",
@@ -522,6 +556,11 @@ if __name__=="__main__":
             parser.error(
                 "--backend dmrg only supports cost_function NC or variance "
                 "(decoupled / sector modes need the statevector FCI path)"
+            )
+        if args.sector_backend != "determinant":
+            parser.error(
+                "--sector_backend clifford is a statevector-sector backend; "
+                "use --backend statevector"
             )
         if args.seniority:
             parser.error("--backend dmrg requires a parity matrix (not --seniority)")
@@ -638,6 +677,11 @@ if __name__=="__main__":
     dumpdata = fcidump_data(args.molpath)
 
     # ── symmetries ────────────────────────────────────────────────────────────
+    symmetry_manifest = (
+        load_symmetry_manifest(args.symmetry_manifest)
+        if args.symmetry_manifest
+        else None
+    )
     if args.seniority:
         sym_of = of.FermionOperator()
         for p in range(moldata.norb):
@@ -649,13 +693,32 @@ if __name__=="__main__":
         symmetry_op = sym_of
         sym_linops  = [fermion_op_to_linop(sym_of, moldata.norb, moldata.nelec)]
     elif args.parity is not None:
-        parity_matrix = np.loadtxt(args.parity, dtype=int)
+        parity_matrix = np.atleast_2d(np.loadtxt(args.parity, dtype=int))
         symmetry_op   = parity_matrix_to_quasisymmetries(parity_matrix,
                                                           moldata.norb,
                                                           moldata.nelec)
         sym_linops    = symmetry_op
+    elif symmetry_manifest is not None:
+        parity_matrix = np.atleast_2d(
+            np.asarray(symmetry_manifest["parity_matrix"], dtype=int)
+        )
+        symmetry_op = parity_matrix_to_quasisymmetries(
+            parity_matrix, moldata.norb, moldata.nelec
+        )
+        sym_linops = symmetry_op
     else:
         parser.error("supply a parity matrix file or --seniority")
+
+    clifford_symmetries = None
+    if args.sector_backend == "clifford":
+        if args.seniority:
+            parser.error("Clifford backend currently requires Z-product symmetries")
+        if symmetry_manifest is not None:
+            clifford_symmetries = symmetry_manifest["symmetries"]
+        else:
+            clifford_symmetries = z_symmetries_from_parity_matrix(
+                parity_matrix, moldata.norb
+            )
 
     # ── reference state ───────────────────────────────────────────────────────
     if args.reference == "fci":
@@ -689,28 +752,59 @@ if __name__=="__main__":
     elif args.cost_function == "variance":
         f = variance_cost(moldata, sym_linops, state)
     elif args.cost_function == "decoupled":
-        if args.parity is None:
+        if args.parity is None and symmetry_manifest is None:
             parser.error("decoupled cost requires a parity matrix")
-        sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
-        f = make_decoupled_energy_cost(moldata, sectors)
-    elif args.cost_function == "fixed_sector":
-        if args.parity is None:
-            parser.error("fixed_sector cost requires a parity matrix")
-        sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
-        if args.fixed_sector is None:
-            initial_energy, sector_label, _ = best_sector(moldata, sectors, x0)
-            print("Selected initial fixed sector:", sector_label)
-            print("Initial fixed-sector energy: {0:4.12f}".format(initial_energy))
+        if args.sector_backend == "clifford":
+            f, clifford_context = make_clifford_decoupled_energy_cost(
+                moldata, clifford_symmetries
+            )
         else:
-            sector_label = parse_sector_label(args.fixed_sector)
-        if sector_label not in sectors:
-            raise ValueError(f"sector {sector_label} is not present in this determinant space")
-        f = make_fixed_sector_energy_cost(moldata, sectors[sector_label])
+            sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
+            f = make_decoupled_energy_cost(moldata, sectors)
+    elif args.cost_function == "fixed_sector":
+        if args.parity is None and symmetry_manifest is None:
+            parser.error("fixed_sector cost requires a parity matrix")
+        if args.sector_backend == "clifford":
+            clifford_context = prepare_clifford_context(
+                clifford_symmetries, moldata.norb, moldata.nelec
+            )
+            if args.fixed_sector is None:
+                initial_energy, sector_label, _ = scan_clifford_sector_energies(
+                    moldata, clifford_context, x0
+                )[0]
+                print("Selected initial fixed sector:", sector_label)
+                print("Initial fixed-sector energy: {0:4.12f}".format(initial_energy))
+            else:
+                sector_label = parse_sector_label(args.fixed_sector)
+            f = make_clifford_fixed_sector_energy_cost(
+                moldata, clifford_context, sector_label
+            )
+        else:
+            sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
+            if args.fixed_sector is None:
+                initial_energy, sector_label, _ = best_sector(moldata, sectors, x0)
+                print("Selected initial fixed sector:", sector_label)
+                print("Initial fixed-sector energy: {0:4.12f}".format(initial_energy))
+            else:
+                sector_label = parse_sector_label(args.fixed_sector)
+            if sector_label not in sectors:
+                raise ValueError(
+                    f"sector {sector_label} is not present in this determinant space"
+                )
+            f = make_fixed_sector_energy_cost(moldata, sectors[sector_label])
     elif args.cost_function == "switching_sector":
-        if args.parity is None:
+        if args.parity is None and symmetry_manifest is None:
             parser.error("switching_sector cost requires a parity matrix")
-        sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
-        initial_energy, initial_label, _ = best_sector(moldata, sectors, x0)
+        if args.sector_backend == "clifford":
+            clifford_context = prepare_clifford_context(
+                clifford_symmetries, moldata.norb, moldata.nelec
+            )
+            initial_energy, initial_label, _ = scan_clifford_sector_energies(
+                moldata, clifford_context, x0
+            )[0]
+        else:
+            sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
+            initial_energy, initial_label, _ = best_sector(moldata, sectors, x0)
         print("Initial switching sector:", initial_label)
         f = None
     else:
@@ -735,14 +829,24 @@ if __name__=="__main__":
                 cost=args.cost_function,
             )
         elif args.cost_function == "switching_sector":
-            res, switching_history = optimize_with_sector_switching(
-                moldata,
-                sectors,
-                x0,
-                maxiter=args.optimizer_maxiter,
-                max_switches=args.sector_switch_maxiter,
-                callback=callback if args.verbose else None,
-            )
+            if args.sector_backend == "clifford":
+                res, switching_history = optimize_with_clifford_sector_switching(
+                    moldata,
+                    clifford_symmetries,
+                    x0,
+                    maxiter=args.optimizer_maxiter,
+                    max_switches=args.sector_switch_maxiter,
+                    callback=callback if args.verbose else None,
+                )
+            else:
+                res, switching_history = optimize_with_sector_switching(
+                    moldata,
+                    sectors,
+                    x0,
+                    maxiter=args.optimizer_maxiter,
+                    max_switches=args.sector_switch_maxiter,
+                    callback=callback if args.verbose else None,
+                )
             for i, step in enumerate(switching_history):
                 print(
                     "switch step {0}: {1} -> {2}; optimized={3:4.12f}; rescanned={4:4.12f}".format(

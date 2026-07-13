@@ -22,6 +22,7 @@ from external_imports import variance, molecular_data_from_fcidump
 
 
 from optimize_symmetries import get_fci, expand_state, comm_sq_exp_fast
+from src.clifford_sectors import save_symmetry_manifest
 
 
 if __name__=="__main__":
@@ -37,6 +38,10 @@ if __name__=="__main__":
     parser.add_argument("--outname", default=None,
                         help="Name of the output file. If none specified, a time stamp will be used.")
     parser.add_argument("--senquart", action="store_true")
+    parser.add_argument("--parity_output", default="parity_matrix.txt",
+                        help="output path for the legacy parity matrix")
+    parser.add_argument("--symmetry_manifest", default="symmetry_manifest.json",
+                        help="output path for ordered signed Pauli symmetries")
 
     args = parser.parse_args()
 
@@ -127,4 +132,19 @@ if __name__=="__main__":
         print(s)
     print("Parity matrix from the Z symmetries")
     print(parity_matrix)
-    np.savetxt("parity_matrix.txt", parity_matrix, fmt='%d')
+    np.savetxt(args.parity_output, parity_matrix, fmt='%d')
+    save_symmetry_manifest(
+        args.symmetry_manifest,
+        beam_symmetries,
+        parity_matrix,
+        metadata={
+            "molpath": args.molpath,
+            "reference": args.reference,
+            "cost_function": args.cost_function,
+            "candidate_family": "seniority_plus_quartet" if args.senquart else "beam_pauli",
+            "selected_set_cost": float(np.real(cost(beam_symmetries))),
+            "individual_costs": [float(np.real(cost([symmetry]))) for symmetry in beam_symmetries],
+        },
+    )
+    print("Saved parity matrix to", args.parity_output)
+    print("Saved symmetry manifest to", args.symmetry_manifest)

@@ -118,6 +118,7 @@ mkl==2021.4.0
 mkl-include==2025.0.0
 ml_dtypes==0.5.3
 module_sdstate==0.2.7
+mpi4py==4.1.2
 mpmath==1.3.0
 msgpack==1.1.0
 mwclient==0.11.0
