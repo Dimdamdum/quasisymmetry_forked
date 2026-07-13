@@ -1,35 +1,51 @@
+from __future__ import annotations
+
 import argparse
-import numpy as np
+import json
 import time
-import ffsim
+from functools import cache, reduce
+from math import comb
+from pathlib import Path
+from typing import Any, Callable, Union
+from uuid import uuid4
+
+import numpy as np
 import scipy
 import scipy.optimize
 import scipy.sparse.linalg
-import pyscf
-import pyscf.fci
-import openfermion as of
-import openfermionpyscf
-import json
-from uuid import uuid4
 
-
-from typing import Callable, Any, Union
-from math import comb
-from functools import cache, reduce
-from pathlib import Path
-
-from chemistry import load_moldata, fcidump_data
-
-from src.state_utils import get_cisd_gs, get_fci_state_openfermion
-from src.bs import beam
-from src.decoupled_energy import (
-    best_sector,
-    make_decoupled_energy_cost,
-    make_fixed_sector_energy_cost,
-    optimize_with_sector_switching,
-)
-from src.sector_utils import symmetry_sectors
-import fcidump_openfermion
+try:
+    import ffsim
+    import openfermion as of
+    import openfermionpyscf  # noqa: F401 — registers openfermion pyscf integration
+    import pyscf
+    import pyscf.fci
+    import pyscf.tools.fcidump  # noqa: F401
+    import fcidump_openfermion  # noqa: F401
+    from chemistry import fcidump_data, load_moldata
+    from src.bs import beam  # noqa: F401
+    from src.decoupled_energy import (
+        best_sector,
+        make_decoupled_energy_cost,
+        make_fixed_sector_energy_cost,
+        optimize_with_sector_switching,
+    )
+    from src.sector_utils import symmetry_sectors
+    from src.state_utils import get_cisd_gs, get_fci_state_openfermion  # noqa: F401
+except ImportError as exc:
+    _FCI_STACK_ERROR = exc
+    ffsim = None
+    of = None
+    pyscf = None
+    fcidump_data = None
+    load_moldata = None
+    best_sector = None
+    make_decoupled_energy_cost = None
+    make_fixed_sector_energy_cost = None
+    optimize_with_sector_switching = None
+    symmetry_sectors = None
+else:
+    _FCI_STACK_ERROR = None
 
 
 def commutator_cost(moldata: ffsim.MolecularData,
@@ -253,10 +269,14 @@ def expand_state(mol: of.MolecularData, ci: np.ndarray, threshold: float = 1e-12
     return state.todense()
 
 
-def callback(intermediate_result: scipy.optimize.OptimizeResult) -> None:
+def callback(intermediate_result) -> None:
     print(time.strftime("%a, %d %b %Y %H:%M:%S",
                         time.localtime()), end=" ")
-    print("{0:4.6f}".format(intermediate_result.fun))
+    # SciPy < 1.11 passes the parameter vector; newer versions pass OptimizeResult.
+    if hasattr(intermediate_result, "fun"):
+        print("{0:4.6f}".format(intermediate_result.fun))
+    else:
+        print("(iter)")
 
 
 def parse_sector_label(text):
@@ -324,10 +344,8 @@ def comm_sq_exp_fast(sym_ops: list[of.QubitOperator], H: Any, state: np.ndarray,
 #   2. Or build ffsim.FermionOperator directly  →  ffsim.linear_operator(op, norb, nelec)
 #   3. Pass the resulting LinearOperator in the symmetries list to commutator_cost
 #   That's it. commutator_cost needs no changes.
- 
-import pyscf.tools.fcidump
- 
- 
+
+
 def of_to_ffsim(op: of.FermionOperator) -> ffsim.FermionOperator:
     """
     Remap of.FermionOperator to ffsim.FermionOperator.
@@ -439,7 +457,30 @@ if __name__=="__main__":
     parser.add_argument("parity", nargs="?", default=None,
                         help="path to the incidence matrix of symmetries")
     parser.add_argument("--seniority", action="store_true")
-    parser.add_argument("--reference", default="fci")   # fci or hf
+    parser.add_argument(
+        "--reference",
+        choices=("fci", "hf", "dmrg"),
+        default="fci",
+        help="reference state (dmrg: MPS ground state; with --backend statevector "
+             "the MPS is reconstructed as a CI vector)",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=("statevector", "dmrg"),
+        default="statevector",
+        help="cost evaluation backend: statevector (ffsim/FCI, default) or "
+             "dmrg (MPS-native NC/variance; scales beyond FCI)",
+    )
+    parser.add_argument("--bond_dim", type=int, default=250,
+                        help="DMRG bond dimension (--reference/--backend dmrg)")
+    parser.add_argument("--wavefunction_dir", default=None,
+                        help="local DMRG wavefunction store to reuse/create")
+    parser.add_argument("--n_threads", type=int, default=4,
+                        help="block2 threads (dmrg backend / reference)")
+    parser.add_argument("--multiply_bond_dim", type=int, default=None,
+                        help="bond dimension for MPO-MPS multiplies (dmrg backend)")
+    parser.add_argument("--multiply_sweeps", type=int, default=8,
+                        help="sweeps per MPO-MPS multiply (dmrg backend)")
     parser.add_argument(
         "--cost_function",
         choices=("NC", "variance", "decoupled", "fixed_sector", "switching_sector"),
@@ -472,6 +513,127 @@ if __name__=="__main__":
 
     args = parser.parse_args()
 
+    # ── MPS-native backend (NC / variance only) ───────────────────────────────
+    if args.backend == "dmrg":
+        from src.dmrg_costs import MultiplyConfig, build_dmrg_orbital_costs
+        from src.dmrg_solver import DMRGConfig
+
+        if args.cost_function not in ("NC", "variance"):
+            parser.error(
+                "--backend dmrg only supports cost_function NC or variance "
+                "(decoupled / sector modes need the statevector FCI path)"
+            )
+        if args.seniority:
+            parser.error("--backend dmrg requires a parity matrix (not --seniority)")
+        if args.parity is None:
+            parser.error("--backend dmrg requires a parity matrix file")
+        if args.reference not in ("dmrg", "fci"):
+            parser.error(
+                "--backend dmrg uses the DMRG ground state as reference; "
+                "use --reference dmrg (or fci as an alias)"
+            )
+        if args.orbene_npy is not None:
+            parser.error("--orbene_npy is not supported with --backend dmrg")
+
+        parity_matrix = np.atleast_2d(np.loadtxt(args.parity, dtype=int))
+        store_dir = args.wavefunction_dir
+        if store_dir is None:
+            store_dir = str(Path("wavefunctions") / Path(args.molpath).stem)
+
+        costs, dmrg_result, solver = build_dmrg_orbital_costs(
+            args.molpath,
+            parity_matrix,
+            store_dir=store_dir,
+            config=DMRGConfig(
+                max_bond_dim=args.bond_dim,
+                n_sweeps=max(12, args.bond_dim // 20 + 8),
+            ),
+            multiply=MultiplyConfig(
+                bond_dim=args.multiply_bond_dim,
+                n_sweeps=args.multiply_sweeps,
+            ),
+            reuse=True,
+            n_threads=args.n_threads,
+        )
+        print("DMRG reference energy: {0:4.6f}".format(dmrg_result.energy))
+        print("wavefunction store: {}".format(dmrg_result.store_dir))
+
+        f = costs.cost_function(args.cost_function)
+        x0 = (
+            np.loadtxt(args.x0)
+            if args.x0
+            else np.zeros(comb(solver.n_sites, 2))
+        )
+        cost_before = f(x0)
+        print("before optimization: {0:4.6f}".format(cost_before))
+
+        t_start = time.time()
+        if args.optimizer_maxiter > 0:
+            res = scipy.optimize.minimize(
+                f,
+                x0,
+                method="L-BFGS-B",
+                options={"maxiter": args.optimizer_maxiter},
+                callback=callback if args.verbose else None,
+            )
+            elapsed = time.time() - t_start
+            print(res.message)
+            print("optimized: {0:4.6f}".format(res.fun))
+        else:
+            res = scipy.optimize.OptimizeResult()
+            res.x = x0
+            res.fun = cost_before
+            res.success = False
+            res.nit = 0
+            res.nfev = 0
+            elapsed = 0.0
+            res.message = "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT"
+
+        if args.output_fcidump is not None:
+            moldata = load_moldata(args.molpath)
+            rh = moldata.hamiltonian.rotated(x_to_rotation(res.x, moldata.norb))
+            ffsim.MolecularData(
+                atom=moldata.atom, basis=moldata.basis, spin=moldata.spin,
+                nelec=moldata.nelec, hf_energy=moldata.hf_energy,
+                norb=moldata.norb, core_energy=moldata.core_energy,
+                one_body_integrals=rh.one_body_tensor,
+                two_body_integrals=rh.two_body_tensor,
+            ).to_fcidump(args.output_fcidump)
+
+        p = Path(args.molpath)
+        if args.outname:
+            outname = args.outname
+        else:
+            outname = (
+                "OO_" + p.parts[-1] + "_"
+                + time.strftime("%Y%m%d_%H%M%S", time.localtime())
+                + "_" + str(uuid4())[:6] + ".json"
+            )
+        out_data = {
+            "backend": "dmrg",
+            "cost_before": float(cost_before),
+            "cost_after": float(res.fun),
+            "converged": bool(res.success),
+            "nit": int(res.nit),
+            "nfev": int(res.nfev),
+            "elapsed": float(elapsed),
+            "message": str(res.message),
+            "dmrg_energy": float(dmrg_result.energy),
+            "wavefunction_dir": str(dmrg_result.store_dir),
+            "rotation": res.x.tolist(),
+        }
+        with open(outname, "a") as fp:
+            json.dump(vars(args) | out_data, fp, indent=2)
+        print("results written to", outname)
+        raise SystemExit(0)
+
+    if _FCI_STACK_ERROR is not None:
+        raise SystemExit(
+            f"--backend statevector requires pyscf/ffsim ({_FCI_STACK_ERROR}). "
+            "Use --backend dmrg on FCIDUMP files without those packages, "
+            "or install the FCI stack / use optimize_dmrg.py."
+        )
+
     moldata  = load_moldata(args.molpath)
     dumpdata = fcidump_data(args.molpath)
 
@@ -500,8 +662,19 @@ if __name__=="__main__":
         _, state = get_fci(dumpdata)
     elif args.reference == "hf":
         state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
+    elif args.reference == "dmrg":
+        from src.dmrg_solver import DMRGConfig, get_dmrg_reference
+
+        e_dmrg, state = get_dmrg_reference(
+            dumpdata,
+            store_dir=args.wavefunction_dir,
+            config=DMRGConfig(max_bond_dim=args.bond_dim),
+            n_threads=args.n_threads,
+            reuse=True,
+        )
+        print("DMRG reference energy: {0:4.6f}".format(e_dmrg))
     else:
-        raise ValueError("reference must be fci or hf")
+        raise ValueError("reference must be fci, hf or dmrg")
     # Wrap as callable; optimize_fcidump will call reference_fn(moldata) internally.
     # Using a lambda that returns the already-computed state avoids running the
     # solver a second time.
@@ -638,17 +811,6 @@ if __name__=="__main__":
 
     with open(outname, "a") as fp:
         json.dump(full_output, fp, indent=2)
-
-    # # if args.outname else time.strftime("%Y%m%d_%H%M%S", time.localtime()) + ".txt"
-    # with open(outname, "a", newline="") as fp:
-    #     fp.write(str(vars(args)) + "\n")
-    #     fp.write(f"# cost_before={cost_before:.6e}  cost_after={res.fun:.6e}  "
-    #              f"converged={res.success}  nit={res.nit}  nfev={res.nfev}  "
-    #              f"elapsed_s={elapsed:.1f}  message={res.message}\n")
-    #     if switching_history is not None:
-    #         for step in switching_history:
-    #             fp.write(str(step) + "\n")
-    #     np.savetxt(fp, res.x)
 
     # ── orbene_npy (optional) ─────────────────────────────────────────────────
     if args.orbene_npy:

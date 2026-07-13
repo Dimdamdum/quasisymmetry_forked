@@ -1267,6 +1267,7 @@ def get_dmrg_reference(
     store_dir: str | Path | None = None,
     config: DMRGConfig | None = None,
     reuse: bool = True,
+    n_threads: int = 4,
 ) -> tuple[float, np.ndarray]:
     """DMRG drop-in replacement for ``optimize_symmetries.get_fci``.
 
@@ -1274,6 +1275,8 @@ def get_dmrg_reference(
     dictionary and returns ``(energy, flattened CI vector)`` in the same
     convention as ``get_fci(dumpdata)``.
     """
-    solver = Block2DMRGSolver.from_dumpdata(dumpdata, store_dir=store_dir)
+    solver = Block2DMRGSolver.from_dumpdata(
+        dumpdata, store_dir=store_dir, n_threads=n_threads
+    )
     result = solve_or_load_ground_state(solver, config=config, reuse=reuse)
     return result.energy, solver.to_ci_vector(solver.get_mps(result.mps_tag))
