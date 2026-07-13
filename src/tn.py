@@ -1,3 +1,11 @@
+"""Qubit / Pauli tensor-network helpers (quimb + block2 SGB Pauli mode).
+
+For the main fermionic quasi-symmetry pipeline, use
+:mod:`src.dmrg_solver` (``Block2DMRGSolver``, SZ ``get_qc_mpo``) instead of
+the Pauli-mode helpers below. This module remains for JW-qubit experiments
+and legacy SGB convergence checks.
+"""
+
 from openfermion import QubitOperator
 from openfermion.utils import count_qubits
 from copy import deepcopy
@@ -16,7 +24,8 @@ def _require_pyblock2():
     if DMRGDriver is None or SymmetryTypes is None:
         raise ImportError(
             "pyblock2 is required for the block2 DMRG helpers in src.tn. "
-            "Use find_dmrg_conv_bd_quimb for the quimb-only DMRG path."
+            "For fermionic DMRG use src.dmrg_solver.Block2DMRGSolver; "
+            "for a quimb-only qubit path use find_dmrg_conv_bd_quimb."
         )
 
 def QO_to_block2_Pauli(Operator: QubitOperator, n_qubits, tol=1e-5):
