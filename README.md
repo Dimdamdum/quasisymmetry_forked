@@ -29,17 +29,11 @@ Output:
 Input arguments and keywords:
 
 1. Hamiltonian. Checkfile or FCIDUMP. In the future I might add support for of.QubitOperator.  
-2. Parity matrix of the symmetries  
-<<<<<<< HEAD
-3. Reference state: \--reference, “fci”, “hf”, “dmrg” (defaults to fci). With “dmrg”, \--bond\_dim sets the bond dimension and \--wavefunction\_dir points at a local MPS store to reuse/create.  
-4. Cost backend: \--backend statevector|dmrg (default statevector). The dmrg backend evaluates NC/variance with MPS-native MPO–MPS multiplies on a fixed DMRG reference (no CI vector), using the identity ``||[H(U), S] U|ψ⟩|| = ||[H, U†SU]|ψ⟩||``. Same ``x`` output format.  
-5. Cost function: variance to ref, NC to ref (defaults to NC)  
+2. Parity matrix of the symmetries (or \--seniority)  
+3. Reference state: \--reference, “fci”, “hf”, “dmrg” (defaults to fci). With “dmrg”, \--bond\_dim / \--wavefunction\_dir control the MPS store.  
+4. Cost backend: \--backend statevector|dmrg (default statevector). The dmrg backend evaluates NC/variance with MPS-native multiplies on a fixed DMRG reference (``||[H(U), S] U|ψ⟩|| = ||[H, U†SU]|ψ⟩||``).  
+5. Cost function: NC, variance, decoupled, fixed\_sector, switching\_sector (decoupled / sector modes are statevector/FCI only)  
 6. x0: optional initial guess for orbital rotations
-=======
-3. Reference state: \--reference, “fci”, “hf”, “cisd” (defaults to fci)  
-4. Cost function: variance to ref, NC to ref (defaults to NC), or a decoupled-sector energy objective  
-5. x0: optional initial guess for orbital rotations
->>>>>>> f09fee37df2e44a547fbf022c745bee435e5c8cf
 
 Supported cost functions:
 
@@ -51,7 +45,7 @@ Supported cost functions:
 
 Returns:
 
-1. Optimized parameters for an orbital rotation saved as a text file.
+1. Optimized rotation parameters in a JSON file (plus optional rotated FCIDUMP / orbene).
 
 #### optimize\_dmrg.py
 
@@ -83,10 +77,8 @@ Core library: `src/dmrg_solver.py` (`Block2DMRGSolver`). MPS-native costs: `src/
 
 Inputs:
 
-1. Hamiltonian  
-2. Parity matrix  
-3. rotation (optional)  
-4. \--solver fci|dmrg — with `dmrg`, runs the MPS-native path (`run_dmrg_metrics`: sector DMRG for E\_decoupled, PT-screened K, no dense `subspace_matrix`); \--bond\_dim, \--wavefunction\_dir, \--penalty, \--max\_sectors, \--reorder, \--entanglement as in solve\_dmrg.py
+1. JSON from ``optimize_symmetries.py`` (molpath, parity, rotation, …)  
+2. \--solver fci|dmrg — with `dmrg`, runs MPS-native E_decoupled / PT-screened K; \--bond\_dim, \--wavefunction\_dir, \--penalty, \--max\_sectors, \--reorder, \--entanglement as in solve\_dmrg.py
 
 Outputs:
 
@@ -94,9 +86,9 @@ Outputs:
 2. K: number of sector eigenstates needed to reach chemical accuracy  
 3. Which sectors do these eigenstates come from
 
-All of this is saved in a text file.
+All of this is saved in a JSON file.
 
-If you want to run this in parallel, call:
+If you want to run the FCI path in parallel, call:
 
 `mpiexec -n 5 python -m mpi4py.futures metrics.py [arguments]`
 
