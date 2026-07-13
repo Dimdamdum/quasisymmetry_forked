@@ -16,6 +16,12 @@ import scipy.linalg
 import scipy.optimize
 
 from src.sector_utils import subspace_matrix
+from src.clifford_sectors import (
+    molecular_hamiltonian_to_jw,
+    prepare_clifford_context,
+    solve_tapered_sector,
+    transform_hamiltonian_in_context,
+)
 
 
 def params_to_rotation(x, norb):
@@ -79,6 +85,49 @@ def make_fixed_sector_energy_cost(moldata, sector_indices):
     return lambda x: fixed_sector_energy(moldata, sector_indices, x)
 
 
+def scan_clifford_sector_energies(moldata, context, x):
+    """Return one-root energies for all physical tapered sectors."""
+    rotation = params_to_rotation(x, moldata.norb)
+    rotated_hamiltonian = moldata.hamiltonian.rotated(rotation)
+    jw_hamiltonian = molecular_hamiltonian_to_jw(rotated_hamiltonian, moldata.nelec)
+    frame = transform_hamiltonian_in_context(jw_hamiltonian, context)
+    results = []
+    for label, indices in context["physical_sectors"].items():
+        solved = solve_tapered_sector(frame, label, indices, 1)
+        results.append((float(solved["energies"][0]), label, solved["dimension"]))
+    results.sort(key=lambda item: item[0])
+    return results
+
+
+def clifford_fixed_sector_energy(moldata, context, label, x):
+    """Return one tapered sector energy at orbital parameters x."""
+    rotation = params_to_rotation(x, moldata.norb)
+    rotated_hamiltonian = moldata.hamiltonian.rotated(rotation)
+    jw_hamiltonian = molecular_hamiltonian_to_jw(rotated_hamiltonian, moldata.nelec)
+    frame = transform_hamiltonian_in_context(jw_hamiltonian, context)
+    solved = solve_tapered_sector(
+        frame,
+        label,
+        context["physical_sectors"][label],
+        1,
+    )
+    return float(solved["energies"][0])
+
+
+def make_clifford_decoupled_energy_cost(moldata, symmetries):
+    """Make a cost that scans all tapered sectors at every evaluation."""
+    context = prepare_clifford_context(symmetries, moldata.norb, moldata.nelec)
+    cost = lambda x: scan_clifford_sector_energies(moldata, context, x)[0][0]
+    return cost, context
+
+
+def make_clifford_fixed_sector_energy_cost(moldata, context, label):
+    """Make a cost for one fixed tapered sector."""
+    if label not in context["physical_sectors"]:
+        raise ValueError(f"sector {label} is not present in the physical space")
+    return lambda x: clifford_fixed_sector_energy(moldata, context, label, x)
+
+
 def optimize_with_sector_switching(
     moldata,
     sectors,
@@ -122,3 +171,47 @@ def optimize_with_sector_switching(
 
     return result, history
 
+
+def optimize_with_clifford_sector_switching(
+    moldata,
+    symmetries,
+    x0,
+    max_switches=5,
+    maxiter=100,
+    callback=None,
+):
+    """Optimize one tapered sector, rescan, and switch until stable."""
+    context = prepare_clifford_context(symmetries, moldata.norb, moldata.nelec)
+    x = np.asarray(x0, dtype=float)
+    current_energy, current_label, _ = scan_clifford_sector_energies(
+        moldata, context, x
+    )[0]
+    history = []
+
+    for _ in range(max_switches + 1):
+        cost = make_clifford_fixed_sector_energy_cost(moldata, context, current_label)
+        result = scipy.optimize.minimize(
+            cost,
+            x,
+            method="L-BFGS-B",
+            options={"maxiter": maxiter},
+            callback=callback,
+        )
+        x = result.x
+        new_energy, new_label, _ = scan_clifford_sector_energies(
+            moldata, context, x
+        )[0]
+        history.append(
+            {
+                "start_sector": current_label,
+                "start_energy": current_energy,
+                "optimized_energy": float(result.fun),
+                "best_sector_after_rescan": new_label,
+                "best_energy_after_rescan": new_energy,
+            }
+        )
+        if new_label == current_label:
+            return result, history
+        current_label = new_label
+        current_energy = new_energy
+    return result, history
