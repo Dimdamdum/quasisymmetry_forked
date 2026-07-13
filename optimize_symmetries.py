@@ -292,9 +292,30 @@ if __name__=="__main__":
 
     # optional arguments
     parser.add_argument("--reference",
+                        choices=("fci", "hf", "dmrg"),
                         help="reference state to use in calculations (default: fci)",
                         default="fci")
+    parser.add_argument("--bond_dim", type=int, default=250,
+                        help="DMRG bond dimension (only with --reference dmrg "
+                             "or --backend dmrg)")
+    parser.add_argument("--wavefunction_dir", default=None,
+                        help="local DMRG wavefunction store to reuse/create "
+                             "(only with --reference/--backend dmrg)")
+    parser.add_argument("--backend",
+                        choices=("statevector", "dmrg"),
+                        default="statevector",
+                        help="cost evaluation backend: statevector (ffsim/FCI, "
+                             "default) or dmrg (MPS-native, scales beyond FCI)")
     parser.add_argument("--cost_function", default="NC")
+    parser.add_argument("--maxiter", type=int, default=100,
+                        help="L-BFGS-B iteration limit")
+    parser.add_argument("--n_threads", type=int, default=4,
+                        help="block2 threads (dmrg backend only)")
+    parser.add_argument("--multiply_bond_dim", type=int, default=None,
+                        help="bond dimension for MPO-MPS multiplies in the "
+                             "dmrg backend (default: 1.5 x reference)")
+    parser.add_argument("--multiply_sweeps", type=int, default=8,
+                        help="sweeps per MPO-MPS multiply (dmrg backend)")
     parser.add_argument("--x0",
                         help="path to the initial guess for the orbital rotation (either U or x)",
                         default=None)
@@ -304,37 +325,88 @@ if __name__=="__main__":
 
     args = parser.parse_args()
 
-    moldata = load_moldata(args.molpath)
-    dumpdata = fcidump_data(args.molpath)
-
     parity_matrix = np.loadtxt(args.parity, dtype=int)
-    symmetries = parity_matrix_to_quasisymmetries(parity_matrix,
-                                                  moldata.norb,
-                                                  moldata.nelec)
-    if args.reference == "fci":
-        _, state = get_fci(dumpdata)
-    elif args.reference == "hf":
-        state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
-    else:
-        raise ValueError("reference must be fci or hf")
 
-    if args.cost_function == "NC":
-        f = commutator_cost(moldata, symmetries, state)
-    elif args.cost_function == "variance":
-        f = variance_cost(moldata, symmetries, state)
-    else:
-        raise ValueError("cost must be 'NC' or 'variance'")
-    
+    if args.backend == "dmrg":
+        from pathlib import Path
 
-    if args.x0 is None:
-        x0 = np.zeros(comb(moldata.norb, 2))
+        from src.dmrg_costs import MultiplyConfig, build_dmrg_orbital_costs
+        from src.dmrg_solver import DMRGConfig
+
+        store_dir = args.wavefunction_dir
+        if store_dir is None:
+            store_dir = str(Path("wavefunctions") / Path(args.molpath).stem)
+
+        costs, dmrg_result, _solver = build_dmrg_orbital_costs(
+            args.molpath,
+            parity_matrix,
+            store_dir=store_dir,
+            config=DMRGConfig(
+                max_bond_dim=args.bond_dim,
+                n_sweeps=max(12, args.bond_dim // 20 + 8),
+            ),
+            multiply=MultiplyConfig(
+                bond_dim=args.multiply_bond_dim,
+                n_sweeps=args.multiply_sweeps,
+            ),
+            reuse=True,
+            n_threads=args.n_threads,
+        )
+        # Reference choice is baked into the stored MPS; --reference dmrg is
+        # implied. HF/FCI references are statevector-only.
+        if args.reference not in ("dmrg", "fci"):
+            raise ValueError(
+                "--backend dmrg uses the DMRG ground state as reference; "
+                "use --reference dmrg (or fci as an alias)"
+            )
+        print("DMRG reference energy: {0:4.6f}".format(dmrg_result.energy))
+        print("wavefunction store: {}".format(dmrg_result.store_dir))
+        f = costs.cost_function(args.cost_function)
+        n_params = comb(_solver.n_sites, 2)
+        if args.x0 is None:
+            x0 = np.zeros(n_params)
+        else:
+            x0 = np.loadtxt(args.x0)
     else:
-        x0 = np.loadtxt(args.x0)
+        moldata = load_moldata(args.molpath)
+        dumpdata = fcidump_data(args.molpath)
+        symmetries = parity_matrix_to_quasisymmetries(
+            parity_matrix, moldata.norb, moldata.nelec
+        )
+        if args.reference == "fci":
+            _, state = get_fci(dumpdata)
+        elif args.reference == "hf":
+            state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
+        elif args.reference == "dmrg":
+            from src.dmrg_solver import DMRGConfig, get_dmrg_reference
+
+            e_dmrg, state = get_dmrg_reference(
+                dumpdata,
+                store_dir=args.wavefunction_dir,
+                config=DMRGConfig(max_bond_dim=args.bond_dim),
+            )
+            print("DMRG reference energy: {0:4.6f}".format(e_dmrg))
+        else:
+            raise ValueError("reference must be fci, hf or dmrg")
+
+        if args.cost_function == "NC":
+            f = commutator_cost(moldata, symmetries, state)
+        elif args.cost_function == "variance":
+            f = variance_cost(moldata, symmetries, state)
+        else:
+            raise ValueError("cost must be 'NC' or 'variance'")
+
+        if args.x0 is None:
+            x0 = np.zeros(comb(moldata.norb, 2))
+        else:
+            x0 = np.loadtxt(args.x0)
 
     print("before optimization: {0:4.6f}".format(f(x0)))
-    res = scipy.optimize.minimize(f, x0, method="L-BFGS-B",
-                                  options={"maxiter": 100},
-                                  callback=callback if args.verbose else None)
+    res = scipy.optimize.minimize(
+        f, x0, method="L-BFGS-B",
+        options={"maxiter": args.maxiter},
+        callback=callback if args.verbose else None,
+    )
     print(res.message)
     print("optimized: {0:4.6f}".format(res.fun))
     if args.outname is not None:
@@ -342,7 +414,6 @@ if __name__=="__main__":
     else:
         outname = time.strftime("%Y%m%d_%H%M%S", time.localtime()) + ".txt"
 
-    with open(outname,
-              "a", newline="") as fp:
+    with open(outname, "a", newline="") as fp:
         fp.write(str(vars(args)) + "\n")
         np.savetxt(fp, res.x)
