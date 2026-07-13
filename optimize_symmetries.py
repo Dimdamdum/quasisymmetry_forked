@@ -1,35 +1,51 @@
+from __future__ import annotations
+
 import argparse
-import numpy as np
+import json
 import time
-import ffsim
+from functools import cache, reduce
+from math import comb
+from pathlib import Path
+from typing import Any, Callable, Union
+from uuid import uuid4
+
+import numpy as np
 import scipy
 import scipy.optimize
 import scipy.sparse.linalg
-import pyscf
-import pyscf.fci
-import openfermion as of
-import openfermionpyscf
-import json
-from uuid import uuid4
 
-
-from typing import Callable, Any, Union
-from math import comb
-from functools import cache, reduce
-from pathlib import Path
-
-from chemistry import load_moldata, fcidump_data
-
-from src.state_utils import get_cisd_gs, get_fci_state_openfermion
-from src.bs import beam
-from src.decoupled_energy import (
-    best_sector,
-    make_decoupled_energy_cost,
-    make_fixed_sector_energy_cost,
-    optimize_with_sector_switching,
-)
-from src.sector_utils import symmetry_sectors
-import fcidump_openfermion
+try:
+    import ffsim
+    import openfermion as of
+    import openfermionpyscf  # noqa: F401 — registers openfermion pyscf integration
+    import pyscf
+    import pyscf.fci
+    import pyscf.tools.fcidump  # noqa: F401
+    import fcidump_openfermion  # noqa: F401
+    from chemistry import fcidump_data, load_moldata
+    from src.bs import beam  # noqa: F401
+    from src.decoupled_energy import (
+        best_sector,
+        make_decoupled_energy_cost,
+        make_fixed_sector_energy_cost,
+        optimize_with_sector_switching,
+    )
+    from src.sector_utils import symmetry_sectors
+    from src.state_utils import get_cisd_gs, get_fci_state_openfermion  # noqa: F401
+except ImportError as exc:
+    _FCI_STACK_ERROR = exc
+    ffsim = None
+    of = None
+    pyscf = None
+    fcidump_data = None
+    load_moldata = None
+    best_sector = None
+    make_decoupled_energy_cost = None
+    make_fixed_sector_energy_cost = None
+    optimize_with_sector_switching = None
+    symmetry_sectors = None
+else:
+    _FCI_STACK_ERROR = None
 
 
 def commutator_cost(moldata: ffsim.MolecularData,
@@ -328,10 +344,8 @@ def comm_sq_exp_fast(sym_ops: list[of.QubitOperator], H: Any, state: np.ndarray,
 #   2. Or build ffsim.FermionOperator directly  →  ffsim.linear_operator(op, norb, nelec)
 #   3. Pass the resulting LinearOperator in the symmetries list to commutator_cost
 #   That's it. commutator_cost needs no changes.
- 
-import pyscf.tools.fcidump
- 
- 
+
+
 def of_to_ffsim(op: of.FermionOperator) -> ffsim.FermionOperator:
     """
     Remap of.FermionOperator to ffsim.FermionOperator.
@@ -612,6 +626,13 @@ if __name__=="__main__":
             json.dump(vars(args) | out_data, fp, indent=2)
         print("results written to", outname)
         raise SystemExit(0)
+
+    if _FCI_STACK_ERROR is not None:
+        raise SystemExit(
+            f"--backend statevector requires pyscf/ffsim ({_FCI_STACK_ERROR}). "
+            "Use --backend dmrg on FCIDUMP files without those packages, "
+            "or install the FCI stack / use optimize_dmrg.py."
+        )
 
     moldata  = load_moldata(args.molpath)
     dumpdata = fcidump_data(args.molpath)
