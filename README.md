@@ -2,6 +2,10 @@
 
 This is a summary of the module that I am making by stitching together Praveen’s code with Linjun’s and mine.
 
+To use this module, close as follows:
+
+`git clone --recurse-submodules https://github.com/aleksey-uvarov/quasisymmetry.git`
+
 #### make\_pyscf\_hamiltonian.py
 
 Can be used to produce a bunch of example Hamiltonians from a hard-coded list.
