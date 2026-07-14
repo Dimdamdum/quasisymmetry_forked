@@ -4,8 +4,8 @@ Phase-3 replacement for the dense ``metrics.subspace_matrix`` path:
 
 * ``E_decoupled`` from sector-targeted DMRG on the exactly decoupled
   Hamiltonian (see :meth:`Block2DMRGSolver.sector_ground_state`);
-* coupled-energy ``K`` via PT-screened greedy selection over DMRG sector
-  eigenstates, using ``<phi_i|H|phi_j>`` MPO expectations (no CI vector);
+* coupled-energy ``K`` via one-shot PT ordering + nested variational search
+  over DMRG sector eigenstates, using ``<phi_i|H|phi_j>`` MPO expectations;
 * orbital entropies and mutual information from the stored ground-state MPS.
 
 Parity matrices given in the *original* orbital order are remapped through
@@ -22,19 +22,15 @@ from typing import Sequence
 import numpy as np
 
 from src.coupled_energy_core import (
+    CHEMICAL_PRECISION,
     COUPLED_ENERGY_DEGENERACY_FLOOR,
-    CoupledSpanState,
-    augment_h_proj,
-    ground_from_h_proj,
-    improves_toward_fci,
-    perturbation_may_improve,
-    trial_ground_energy_incremental,
+    DEFAULT_BLOCK_SIZE,
+    DEFAULT_TAU_PT,
+    one_shot_from_hamiltonian,
 )
 from src.dmrg_solver import Block2DMRGSolver, DMRGConfig
 
 logger = logging.getLogger(__name__)
-
-CHEMICAL_PRECISION = 0.0016
 
 
 @dataclass
@@ -168,121 +164,51 @@ def _hamiltonian_element(
     return complex(solver.expectation(solver.hamiltonian_mpo(), ket=ket, bra=bra))
 
 
-def greedy_coupled_energy_mps(
+def build_mps_candidate_hamiltonian(
+    solver: Block2DMRGSolver,
+    states: Sequence[SectorState],
+) -> np.ndarray:
+    """Dense candidate Hamiltonian from MPO expectations."""
+    n = len(states)
+    h_mat = np.zeros((n, n), dtype=np.complex128)
+    for j, ket in enumerate(states):
+        for i, bra in enumerate(states[: j + 1]):
+            if i == j:
+                value = complex(ket.energy)
+            else:
+                value = _hamiltonian_element(solver, bra.mps_tag, ket.mps_tag)
+            h_mat[i, j] = value
+            h_mat[j, i] = np.conjugate(value)
+    return 0.5 * (h_mat + h_mat.conj().T)
+
+
+def one_shot_coupled_energy_mps(
     solver: Block2DMRGSolver,
     states: Sequence[SectorState],
     *,
     e_exact: float | None = None,
     tol: float = CHEMICAL_PRECISION,
-    max_total_vectors: int | None = None,
-    coupling_tol: float = 1e-12,
-    energy_change_tol: float = 1e-12,
+    tau_pt: float = DEFAULT_TAU_PT,
+    block_size: int = DEFAULT_BLOCK_SIZE,
     degeneracy_floor: float = COUPLED_ENERGY_DEGENERACY_FLOOR,
+    max_total_vectors: int | None = None,
 ) -> tuple[float | None, int, bool, list[tuple[tuple[int, ...], int]]]:
-    """PT-screened greedy K using MPS Hamiltonian matrix elements."""
+    """One-shot PT + nested variational ``K`` using MPS Hamiltonian elements."""
     if not states:
         return None, 0, False, []
-    if max_total_vectors is None:
-        max_total_vectors = len(states)
-
-    # Cache <i|H|j> for chosen/candidate pairs as we go.
-    h_cache: dict[tuple[str, str], complex] = {}
-
-    def h_ij(tag_a: str, tag_b: str) -> complex:
-        key = (tag_a, tag_b)
-        key_rev = (tag_b, tag_a)
-        if key in h_cache:
-            return h_cache[key]
-        if key_rev in h_cache:
-            return np.conjugate(h_cache[key_rev])
-        value = _hamiltonian_element(solver, tag_a, tag_b)
-        h_cache[key] = value
-        return value
-
-    chosen_keys: list[tuple[tuple[int, ...], int]] = []
-    chosen_indices: set[int] = set()
-    chosen_tags: list[str] = []
-    state: CoupledSpanState | None = None
-    converged = False
-
-    while True:
-        added_this_pass = False
-        for index, cand in enumerate(states):
-            if index in chosen_indices:
-                continue
-            if len(chosen_keys) >= max_total_vectors:
-                break
-
-            if state is None:
-                e_new = float(cand.energy)
-                h_cache[(cand.mps_tag, cand.mps_tag)] = complex(e_new)
-                h_proj = np.array([[e_new]], dtype=np.complex128)
-                state = CoupledSpanState(
-                    chosen_vecs=[],  # unused in MPS path
-                    h_vecs=[],
-                    h_proj=h_proj,
-                    psi0=np.array([1.0], dtype=np.complex128),
-                    e_proj=e_new,
-                )
-                chosen_tags = [cand.mps_tag]
-            else:
-                h_cols = [
-                    h_ij(tag, cand.mps_tag) for tag in chosen_tags
-                ]
-                max_coupling = max((abs(z) for z in h_cols), default=0.0)
-                if max_coupling <= coupling_tol:
-                    continue
-
-                if not perturbation_may_improve(
-                    state.psi0,
-                    h_cols,
-                    state.e_proj,
-                    float(cand.energy),
-                    state.e_proj,
-                    e_exact,
-                    coupling_tol=coupling_tol,
-                    energy_change_tol=energy_change_tol,
-                    degeneracy_floor=degeneracy_floor,
-                ):
-                    continue
-
-                e_new = trial_ground_energy_incremental(
-                    state.h_proj, h_cols, float(cand.energy)
-                )
-                if not improves_toward_fci(
-                    e_new, state.e_proj, e_exact, energy_change_tol
-                ):
-                    continue
-
-                h_trial = augment_h_proj(state.h_proj, h_cols, float(cand.energy))
-                e_accept, psi0 = ground_from_h_proj(h_trial)
-                state = CoupledSpanState(
-                    chosen_vecs=[],
-                    h_vecs=[],
-                    h_proj=h_trial,
-                    psi0=psi0,
-                    e_proj=e_accept,
-                )
-                chosen_tags.append(cand.mps_tag)
-
-            chosen_indices.add(index)
-            chosen_keys.append((cand.sector_label, cand.block_index))
-            added_this_pass = True
-
-            if e_exact is not None and abs(state.e_proj - e_exact) <= tol:
-                converged = True
-                break
-
-        if converged:
-            break
-        if not added_this_pass or len(chosen_keys) >= max_total_vectors:
-            break
-
-    if state is None:
-        return None, 0, False, []
-    if e_exact is not None and abs(state.e_proj - e_exact) <= tol:
-        converged = True
-    return state.e_proj, len(chosen_keys), converged, chosen_keys
+    h_coupled = build_mps_candidate_hamiltonian(solver, states)
+    keys = [(s.sector_label, s.block_index) for s in states]
+    result = one_shot_from_hamiltonian(
+        h_coupled,
+        e_exact=e_exact,
+        tol=tol,
+        tau_pt=tau_pt,
+        block_size=block_size,
+        degeneracy_floor=degeneracy_floor,
+        keys=keys,
+        max_total_vectors=max_total_vectors,
+    )
+    return result.as_tuple()
 
 
 def coupled_energy_dmrg(
@@ -298,7 +224,7 @@ def coupled_energy_dmrg(
     max_sectors: int = 8,
     chemical_precision: float = CHEMICAL_PRECISION,
 ) -> CoupledDiagnostic:
-    """Build sector spectra with DMRG and run the PT-screened K diagnostic.
+    """Build sector spectra with DMRG and run the one-shot PT ``K`` diagnostic.
 
     ``parity_matrix`` must be in the *original* orbital order; remapping for a
     reordered solver is handled inside :func:`collect_sector_states`.
@@ -318,7 +244,7 @@ def coupled_energy_dmrg(
         penalty=penalty,
         config=config,
     )
-    e_coupled, k, converged, chosen = greedy_coupled_energy_mps(
+    e_coupled, k, converged, chosen = one_shot_coupled_energy_mps(
         solver,
         states,
         e_exact=e_reference,
@@ -429,7 +355,7 @@ def format_metrics_report(report: DMRGMetricsReport) -> list[str]:
             f"symmetry expectations {np.round(report.symmetry_expectations, 6)}"
         )
     if report.coupled is not None:
-        lines.append("coupled_energy_method perturbation")
+        lines.append("coupled_energy_method one_shot_perturbation")
         if report.coupled.e_coupled is not None:
             lines.append(f"E_coupled {report.coupled.e_coupled:4.6f}")
         lines.append(f"K {report.coupled.k}")

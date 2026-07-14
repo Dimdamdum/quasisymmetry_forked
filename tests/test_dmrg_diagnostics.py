@@ -13,12 +13,12 @@ import openfermion as of
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.coupled_energy_core import greedy_coupled_energy
+from src.coupled_energy_core import one_shot_coupled_energy
 from src.dmrg_diagnostics import (
     collect_sector_states,
     decoupled_energy_dmrg,
     entanglement_diagnostic,
-    greedy_coupled_energy_mps,
+    one_shot_coupled_energy_mps,
     prepare_parity_matrix,
 )
 from src.dmrg_solver import (
@@ -183,14 +183,14 @@ class TestDMRGDiagnostics(unittest.TestCase):
 
     def test_coupled_energy_mps_matches_dense_pt(self):
         # Build a few sector eigenstates with DMRG and compare K path to
-        # dense greedy on the same vectors reconstructed as statevectors.
+        # dense one-shot PT on the same vectors reconstructed as statevectors.
         labels = [(0, 0), (0, 1), (1, 0)]
         states = collect_sector_states(
             self.solver, self.parity, labels,
             nroots=2, penalty=30.0,
             config=DMRGConfig(max_bond_dim=120, n_sweeps=14),
         )
-        e_mps, k_mps, conv_mps, chosen_mps = greedy_coupled_energy_mps(
+        e_mps, k_mps, conv_mps, chosen_mps = one_shot_coupled_energy_mps(
             self.solver, states, e_exact=self.gs.energy, tol=1e-3
         )
 
@@ -201,14 +201,14 @@ class TestDMRGDiagnostics(unittest.TestCase):
             candidates.append(
                 (state.energy, state.sector_label, vec, state.block_index)
             )
-        candidates.sort(key=lambda item: item[0])
 
         def apply_h(v):
             return self.H @ v
 
-        e_dense, k_dense, conv_dense, chosen_dense = greedy_coupled_energy(
+        result = one_shot_coupled_energy(
             candidates, apply_h, e_exact=self.gs.energy, tol=1e-3
         )
+        e_dense, k_dense, conv_dense, chosen_dense = result.as_tuple()
         self.assertEqual(k_mps, k_dense)
         self.assertEqual(conv_mps, conv_dense)
         self.assertAlmostEqual(e_mps, e_dense, delta=1e-4)

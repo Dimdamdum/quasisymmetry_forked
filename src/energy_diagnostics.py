@@ -7,12 +7,14 @@ from collections.abc import Callable
 import numpy as np
 
 from src.coupled_energy_core import (
+    CHEMICAL_PRECISION,
     COUPLED_ENERGY_DEGENERACY_FLOOR,
+    DEFAULT_BLOCK_SIZE,
+    DEFAULT_TAU_PT,
     all_sector_eigenpair_candidates,
-    greedy_coupled_energy,
+    one_shot_coupled_energy,
+    reference_coupled_energy,
 )
-
-CHEMICAL_PRECISION = 0.0016
 
 
 def diagonalize_sector_blocks(h_apply, sectors_dict, full_dim: int):
@@ -78,24 +80,24 @@ def coupled_energy_perturbation(
     sector_data,
     *,
     e_exact: float | None = None,
-    tol: float = 1e-8,
+    tol: float = CHEMICAL_PRECISION,
     max_total_vectors: int | None = None,
-    coupling_tol: float = 1e-12,
-    energy_change_tol: float = 1e-12,
+    tau_pt: float = DEFAULT_TAU_PT,
+    block_size: int = DEFAULT_BLOCK_SIZE,
     degeneracy_floor: float = COUPLED_ENERGY_DEGENERACY_FLOOR,
 ):
-    """PT-screened greedy coupled-energy selection over sector eigenvectors."""
+    """One-shot PT ordering + nested variational coupled dimension."""
     candidates = all_sector_eigenpair_candidates(sector_data)
-    return greedy_coupled_energy(
+    return one_shot_coupled_energy(
         candidates,
         h_apply,
         e_exact=e_exact,
         tol=tol,
-        max_total_vectors=max_total_vectors,
-        coupling_tol=coupling_tol,
-        energy_change_tol=energy_change_tol,
+        tau_pt=tau_pt,
+        block_size=block_size,
         degeneracy_floor=degeneracy_floor,
-    )
+        max_total_vectors=max_total_vectors,
+    ).as_tuple()
 
 
 def reference_coupled_energy_k(
@@ -105,40 +107,32 @@ def reference_coupled_energy_k(
     e_exact: float,
     *,
     chemical_precision: float = CHEMICAL_PRECISION,
+    block_size: int = DEFAULT_BLOCK_SIZE,
 ):
     """
-    Greedy K from FCI (reference) coefficients on sector eigenvectors.
+    Reference-overlap ordering + nested variational ``K``.
 
-    Returns (K, e_coupled, converged, chosen_column_indices).
+    ``full_space_vectors_cat`` columns are sector eigenstates. Returns
+    ``(K, e_coupled, converged, order_indices)`` where ``order_indices`` indexes
+    those columns in decreasing ``|<psi|Psi_ref>|^2`` order.
     """
-    coefficients = full_space_vectors_cat.T.conj() @ reference_vector
-    weights_order = np.argsort(abs(coefficients))[::-1]
+    n = full_space_vectors_cat.shape[1]
+    candidates = [
+        (0.0, j, full_space_vectors_cat[:, j], 0) for j in range(n)
+    ]
+    result = reference_coupled_energy(
+        candidates,
+        h_apply,
+        reference_vector,
+        e_exact=e_exact,
+        tol=chemical_precision,
+        block_size=block_size,
+    )
+    order = np.asarray(result.order_indices, dtype=int)
+    if result.K is None:
+        return None, result.e_coupled, False, order
+    return result.K, result.e_coupled, result.converged, order
 
-    projected = full_space_vectors_cat @ coefficients
-    projected /= np.linalg.norm(projected)
-    e_full = float(np.real(projected.T.conj() @ h_apply(projected)))
-    if e_full > e_exact + chemical_precision:
-        return None, e_full, False, weights_order
-
-    def f(k):
-        compressed = np.zeros_like(coefficients, dtype=np.complex128)
-        compressed[weights_order[:k]] = coefficients[weights_order[:k]]
-        compressed /= np.linalg.norm(compressed)
-        vec = full_space_vectors_cat @ compressed
-        e_k = float(np.real(vec.T.conj() @ h_apply(vec)))
-        return (e_k - e_exact - chemical_precision).real
-
-    k_min = _find_first_negative(f, full_space_vectors_cat.shape[1])
-    if k_min < 0 or k_min >= full_space_vectors_cat.shape[1]:
-        return None, e_full, False, weights_order
-
-    converged = True
-    compressed = np.zeros_like(coefficients, dtype=np.complex128)
-    compressed[weights_order[:k_min]] = coefficients[weights_order[:k_min]]
-    compressed /= np.linalg.norm(compressed)
-    vec = full_space_vectors_cat @ compressed
-    e_coupled = float(np.real(vec.T.conj() @ h_apply(vec)))
-    return k_min, e_coupled, converged, weights_order
 
 
 def state_labels_for_columns(sector_gs_pairs):
@@ -159,10 +153,3 @@ def _subspace_matrix(h_apply, support, full_dim: int):
         y = h_apply(x)
         h_sub[:, i] = y[support]
     return h_sub
-
-
-def _find_first_negative(f, n):
-    for k in range(1, n + 1):
-        if f(k) < 0:
-            return k
-    return -1

@@ -10,6 +10,11 @@ import pyscf.fci.cistring
 import scipy.sparse.linalg
 
 from external_imports import Clifford, taper_hamiltonian
+from src.coupled_energy_core import (
+    coupled_dimension_from_order,
+    one_shot_from_hamiltonian,
+    reference_candidate_order as _reference_candidate_order,
+)
 
 
 def qubit_operator_to_data(operator):
@@ -541,39 +546,7 @@ def candidate_reference_weights(frame, candidates, transformed_reference):
 
 def reference_candidate_order(weights):
     """Order candidates from largest to smallest reference weight."""
-    return list(np.argsort(np.asarray(weights))[::-1])
-
-
-def perturbative_candidate_order(h_coupled, denominator_floor=1e-8):
-    """Greedily order states by a coupling-squared-over-gap estimate."""
-    if h_coupled.shape[0] == 0:
-        return []
-    chosen = [int(np.argmin(np.real(np.diag(h_coupled))))]
-    remaining = set(range(h_coupled.shape[0])) - set(chosen)
-
-    while remaining:
-        submatrix = h_coupled[np.ix_(chosen, chosen)]
-        energies, vectors = np.linalg.eigh(submatrix)
-        ground_energy = float(np.real(energies[0]))
-        ground_vector = vectors[:, 0]
-
-        best_index = None
-        best_score = -1.0
-        for index in remaining:
-            couplings = h_coupled[np.ix_(chosen, [index])][:, 0]
-            effective_coupling = np.vdot(ground_vector, couplings)
-            denominator = max(
-                abs(float(np.real(h_coupled[index, index])) - ground_energy),
-                denominator_floor,
-            )
-            score = float(abs(effective_coupling) ** 2 / denominator)
-            if score > best_score:
-                best_score = score
-                best_index = index
-
-        chosen.append(int(best_index))
-        remaining.remove(best_index)
-    return chosen
+    return _reference_candidate_order(weights)
 
 
 def perturbative_coupled_energy_curve(
@@ -581,69 +554,28 @@ def perturbative_coupled_energy_curve(
     exact_energy=None,
     tolerance=0.0016,
     denominator_floor=1e-8,
+    tau_pt=1e-12,
+    block_size=1,
 ):
-    """Select perturbative candidates and stop when the target is reached."""
-    if h_coupled.shape[0] == 0:
-        return {"order": [], "energies": [], "K": None, "converged": False}
-
-    chosen = [int(np.argmin(np.real(np.diag(h_coupled))))]
-    remaining = set(range(h_coupled.shape[0])) - set(chosen)
-    energies = []
-    k_epsilon = None
-
-    while chosen:
-        submatrix = h_coupled[np.ix_(chosen, chosen)]
-        eigenvalues, eigenvectors = np.linalg.eigh(submatrix)
-        ground_energy = float(np.real(eigenvalues[0]))
-        ground_vector = eigenvectors[:, 0]
-        energies.append(ground_energy)
-
-        if exact_energy is not None and abs(ground_energy - exact_energy) <= tolerance:
-            k_epsilon = len(chosen)
-            break
-        if not remaining:
-            break
-
-        best_index = None
-        best_score = -1.0
-        for index in remaining:
-            couplings = h_coupled[np.ix_(chosen, [index])][:, 0]
-            effective_coupling = np.vdot(ground_vector, couplings)
-            denominator = max(
-                abs(float(np.real(h_coupled[index, index])) - ground_energy),
-                denominator_floor,
-            )
-            score = float(abs(effective_coupling) ** 2 / denominator)
-            if score > best_score:
-                best_score = score
-                best_index = index
-
-        chosen.append(int(best_index))
-        remaining.remove(best_index)
-
-    return {
-        "order": chosen,
-        "energies": energies,
-        "K": k_epsilon,
-        "converged": k_epsilon is not None,
-    }
+    """One-shot PT ordering + nested variational curve (Clifford entry point)."""
+    result = one_shot_from_hamiltonian(
+        np.asarray(h_coupled),
+        e_exact=exact_energy,
+        tol=tolerance,
+        tau_pt=tau_pt,
+        block_size=block_size,
+        degeneracy_floor=denominator_floor,
+    )
+    return result.as_curve()
 
 
 def coupled_energy_curve(h_coupled, order, exact_energy=None, tolerance=0.0016):
-    """Return the variational energy curve and first K reaching a tolerance."""
-    energies = []
-    k_epsilon = None
-    for count in range(1, len(order) + 1):
-        indices = order[:count]
-        energy = float(np.linalg.eigvalsh(h_coupled[np.ix_(indices, indices)])[0])
-        energies.append(energy)
-        if exact_energy is not None and k_epsilon is None:
-            if abs(energy - exact_energy) <= tolerance:
-                k_epsilon = count
-                break
-    return {
-        "order": [int(index) for index in order],
-        "energies": energies,
-        "K": k_epsilon,
-        "converged": k_epsilon is not None,
-    }
+    """Nested variational energy curve along a fixed candidate order."""
+    result = coupled_dimension_from_order(
+        np.asarray(h_coupled),
+        order,
+        e_exact=exact_energy,
+        tol=tolerance,
+        k_start=1,
+    )
+    return result.as_curve()

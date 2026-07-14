@@ -768,9 +768,9 @@ if __name__ == "__main__":
         "--coupled_energy_method",
         choices=("reference", "perturbation"),
         default="reference",
-        help="K_coupled selection: FCI-coefficient greedy (reference) or "
-             "PT-screened greedy (perturbation). Ignored for --solver dmrg "
-             "(always PT-screened).",
+        help="K_coupled selection: reference-overlap ordering (reference) or "
+             "one-shot PT ordering (perturbation), both with nested variational "
+             "search. DMRG uses one-shot PT.",
     )
     args = parser.parse_args()
 
@@ -864,7 +864,7 @@ if __name__ == "__main__":
     h_apply = lambda v: rotated_h_linop @ v
 
     if args.coupled_energy_method == "perturbation":
-        print("Calculating K via PT-screened coupled-energy greedy selection")
+        print("Calculating K via one-shot PT ordering + nested variational search")
         sector_data = sector_data_from_gs_pairs(
             sectors, sector_eigs, rotated_h_linop.shape[0]
         )
