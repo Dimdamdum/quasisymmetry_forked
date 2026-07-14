@@ -688,7 +688,7 @@ if __name__ == "__main__":
     h_apply = lambda v: rotated_h_linop @ v
 
     if args.coupled_energy_method == "perturbation":
-        print("Calculating K via PT-screened coupled-energy greedy selection")
+        print("Calculating K via one-shot PT ordering + nested variational search")
         sector_data = sector_data_from_gs_pairs(
             sectors, sector_eigs, rotated_h_linop.shape[0]
         )
@@ -697,6 +697,7 @@ if __name__ == "__main__":
             sector_data,
             e_exact=e_fci,
             tol=CHEMICAL_PRECISION,
+            method="one_shot",
         )
         print("E_coupled", e_coupled)
         print("K", k_coupled)

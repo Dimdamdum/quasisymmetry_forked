@@ -1,4 +1,4 @@
-"""Sanity checks for PT-screened coupled-energy diagnostics."""
+"""Sanity checks for PT coupled-energy / coupled-dimension diagnostics."""
 
 from __future__ import annotations
 
@@ -13,8 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.coupled_energy_core import (
     all_sector_eigenpair_candidates,
     augment_h_proj,
+    find_k_epsilon,
     h_cols_from_h_vecs,
-    perturbation_may_improve,
+    k_pt_from_ordered_weights,
+    one_shot_coupled_energy,
+    one_shot_pt_order,
+    one_shot_pt_weight,
     projected_ground_energy_dense,
     trial_ground_energy_incremental,
 )
@@ -59,7 +63,7 @@ def _toy_with_excited_cross_coupling():
 
 
 class CoupledEnergySanityTests(unittest.TestCase):
-    def test_pt_matches_exact_on_toy(self):
+    def test_one_shot_matches_exact_on_toy(self):
         h, _sectors, sector_data, e_exact = _toy_hamiltonian_and_sectors()
         e_pt, k_pt, converged, _ = coupled_energy_perturbation(
             lambda v: h @ v, sector_data, e_exact=e_exact, tol=1e-10
@@ -68,7 +72,7 @@ class CoupledEnergySanityTests(unittest.TestCase):
         self.assertAlmostEqual(e_pt, e_exact, places=10)
         self.assertGreaterEqual(k_pt, 2)
 
-    def test_pt_finds_excited_cross_coupling(self):
+    def test_one_shot_finds_excited_cross_coupling(self):
         h, _sectors, sector_data, e_exact = _toy_with_excited_cross_coupling()
         e_pt, k_pt, converged, keys = coupled_energy_perturbation(
             lambda v: h @ v, sector_data, e_exact=e_exact, tol=1e-10
@@ -78,6 +82,75 @@ class CoupledEnergySanityTests(unittest.TestCase):
         self.assertGreater(k_pt, 2)
         block_indices = {idx for _key, idx in keys}
         self.assertIn(1, block_indices)
+
+    def test_greedy_still_available(self):
+        h, _sectors, sector_data, e_exact = _toy_hamiltonian_and_sectors()
+        e_pt, k_pt, converged, _ = coupled_energy_perturbation(
+            lambda v: h @ v,
+            sector_data,
+            e_exact=e_exact,
+            tol=1e-10,
+            method="greedy",
+        )
+        self.assertTrue(converged)
+        self.assertAlmostEqual(e_pt, e_exact, places=10)
+        self.assertGreaterEqual(k_pt, 2)
+
+    def test_pt_ordering_ranks_coupled_state_first(self):
+        h, _sectors, sector_data, e_exact = _toy_hamiltonian_and_sectors()
+        candidates = all_sector_eigenpair_candidates(sector_data)
+        energies = [c[0] for c in candidates]
+        ref = int(np.argmin(energies))
+        h_ref = h @ candidates[ref][2]
+        couplings = [complex(np.vdot(c[2], h_ref)) for c in candidates]
+        order, weights = one_shot_pt_order(energies, couplings, ref)
+        self.assertEqual(order[0], ref)
+        # First external should be the uniquely coupled partner (sector B, root 0).
+        first_ext = order[1]
+        self.assertGreater(weights[first_ext], 0.0)
+        for index in order[2:]:
+            self.assertGreaterEqual(weights[first_ext], weights[index])
+
+    def test_k_pt_threshold_and_nested_search(self):
+        weights = [1.0, 0.5, 1e-14, 0.0]
+        self.assertEqual(k_pt_from_ordered_weights(weights, tau_pt=0.1), 3)
+        self.assertEqual(k_pt_from_ordered_weights(weights, tau_pt=2.0), 1)
+
+        # Nested 3-state problem: exact GS needs both couplings.
+        h_ord = np.asarray(
+            [
+                [0.0, 0.2, 0.0],
+                [0.2, 1.0, 0.1],
+                [0.0, 0.1, 2.0],
+            ],
+            dtype=np.float64,
+        )
+        e_ref = float(np.linalg.eigvalsh(h_ord)[0])
+        k_eps, energies, converged = find_k_epsilon(
+            h_ord, e_ref, epsilon=1e-10, k_start=1, block_size=1
+        )
+        self.assertTrue(converged)
+        self.assertEqual(k_eps, 3)
+        self.assertEqual(len(energies), 3)
+        self.assertLessEqual(energies[1], energies[0] + 1e-12)
+        self.assertLessEqual(energies[2], energies[1] + 1e-12)
+        self.assertAlmostEqual(energies[-1], e_ref, places=10)
+
+    def test_degenerate_coupling_gets_infinite_weight(self):
+        self.assertEqual(one_shot_pt_weight(0.1, 0.0), float("inf"))
+        self.assertEqual(one_shot_pt_weight(0.0, 0.0), 0.0)
+
+    def test_one_shot_result_exposes_k_pt(self):
+        h, _sectors, sector_data, e_exact = _toy_hamiltonian_and_sectors()
+        candidates = all_sector_eigenpair_candidates(sector_data)
+        result = one_shot_coupled_energy(
+            candidates, lambda v: h @ v, e_exact=e_exact, tol=1e-10, tau_pt=1e-12
+        )
+        self.assertTrue(result.converged)
+        self.assertGreaterEqual(result.K_pt, 1)
+        self.assertGreaterEqual(result.K, 2)
+        self.assertAlmostEqual(result.e_coupled, e_exact, places=10)
+        self.assertEqual(len(result.chosen_keys), result.K)
 
     def test_incremental_matches_dense_projection(self):
         h, _sectors, sector_data, e_exact = _toy_hamiltonian_and_sectors()

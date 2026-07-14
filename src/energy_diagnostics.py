@@ -7,12 +7,14 @@ from collections.abc import Callable
 import numpy as np
 
 from src.coupled_energy_core import (
+    CHEMICAL_PRECISION,
     COUPLED_ENERGY_DEGENERACY_FLOOR,
+    DEFAULT_BLOCK_SIZE,
+    DEFAULT_TAU_PT,
     all_sector_eigenpair_candidates,
     greedy_coupled_energy,
+    one_shot_coupled_energy_tuple,
 )
-
-CHEMICAL_PRECISION = 0.0016
 
 
 def diagonalize_sector_blocks(h_apply, sectors_dict, full_dim: int):
@@ -78,24 +80,46 @@ def coupled_energy_perturbation(
     sector_data,
     *,
     e_exact: float | None = None,
-    tol: float = 1e-8,
+    tol: float = CHEMICAL_PRECISION,
     max_total_vectors: int | None = None,
+    tau_pt: float = DEFAULT_TAU_PT,
+    block_size: int = DEFAULT_BLOCK_SIZE,
+    degeneracy_floor: float = COUPLED_ENERGY_DEGENERACY_FLOOR,
+    method: str = "one_shot",
     coupling_tol: float = 1e-12,
     energy_change_tol: float = 1e-12,
-    degeneracy_floor: float = COUPLED_ENERGY_DEGENERACY_FLOOR,
 ):
-    """PT-screened greedy coupled-energy selection over sector eigenvectors."""
+    """Coupled dimension from sector eigenvectors via PT selection.
+
+    Default ``method="one_shot"`` uses fixed Epstein--Nesbet ranking relative to
+    the lowest sector state, then a nested variational search for the minimal
+    ``K`` at tolerance ``tol``.  Pass ``method="greedy"`` for the legacy
+    multi-pass PT-screened selector.
+    """
     candidates = all_sector_eigenpair_candidates(sector_data)
-    return greedy_coupled_energy(
-        candidates,
-        h_apply,
-        e_exact=e_exact,
-        tol=tol,
-        max_total_vectors=max_total_vectors,
-        coupling_tol=coupling_tol,
-        energy_change_tol=energy_change_tol,
-        degeneracy_floor=degeneracy_floor,
-    )
+    if method == "one_shot":
+        return one_shot_coupled_energy_tuple(
+            candidates,
+            h_apply,
+            e_exact=e_exact,
+            tol=tol,
+            tau_pt=tau_pt,
+            block_size=block_size,
+            degeneracy_floor=degeneracy_floor,
+            max_total_vectors=max_total_vectors,
+        )
+    if method == "greedy":
+        return greedy_coupled_energy(
+            candidates,
+            h_apply,
+            e_exact=e_exact,
+            tol=tol,
+            max_total_vectors=max_total_vectors,
+            coupling_tol=coupling_tol,
+            energy_change_tol=energy_change_tol,
+            degeneracy_floor=degeneracy_floor,
+        )
+    raise ValueError(f"Unknown coupled-energy method: {method!r}")
 
 
 def reference_coupled_energy_k(
