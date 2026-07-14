@@ -257,21 +257,46 @@ def apply_clifford_to_basis_bits(bits, clifford):
 
 def physical_sector_indices(norb, nelec, clifford, n_symmetries):
     """Map fixed-(Nalpha,Nbeta) determinants to tapered residual indices."""
-    sectors = {}
+    return physical_clifford_basis(norb, nelec, clifford, n_symmetries)[
+        "residual_indices"
+    ]
+
+
+def physical_clifford_basis(norb, nelec, clifford, n_symmetries):
+    """Map physical determinants to their Clifford-frame sector coordinates."""
+    sector_entries = {}
+    full_indices = []
     for alpha in itertools.combinations(range(norb), int(nelec[0])):
         for beta in itertools.combinations(range(norb), int(nelec[1])):
             bits = occupation_bits(alpha, beta, norb)
             transformed = apply_clifford_to_basis_bits(bits, clifford)
             label = tuple(transformed[:n_symmetries])
             residual_index = bits_to_index(transformed[n_symmetries:])
-            sectors.setdefault(label, []).append(residual_index)
+            full_index = bits_to_index(transformed)
+            physical_position = len(full_indices)
+            full_indices.append(full_index)
+            sector_entries.setdefault(label, []).append(
+                (residual_index, physical_position)
+            )
 
-    for label, indices in sectors.items():
-        unique = sorted(set(indices))
-        if len(unique) != len(indices):
+    if len(set(full_indices)) != len(full_indices):
+        raise ValueError("Clifford mapping is not one-to-one on physical determinants")
+
+    residual_indices = {}
+    physical_positions = {}
+    for label, entries in sector_entries.items():
+        ordered = sorted(entries)
+        indices = [item[0] for item in ordered]
+        positions = [item[1] for item in ordered]
+        if len(set(indices)) != len(indices):
             raise ValueError(f"Clifford mapping is not one-to-one in sector {label}")
-        sectors[label] = unique
-    return sectors
+        residual_indices[label] = indices
+        physical_positions[label] = positions
+    return {
+        "full_indices": full_indices,
+        "residual_indices": residual_indices,
+        "physical_positions": physical_positions,
+    }
 
 
 def parse_sector_labels(text, n_symmetries):
@@ -307,6 +332,82 @@ def restricted_operator_matrix(operator, n_qubits, row_indices, column_indices=N
     return matrix[np.asarray(row_indices), :][:, np.asarray(column_indices)]
 
 
+def pauli_term_action_masks(pauli_term, n_qubits):
+    """Return bit masks and a phase for one Pauli word acting on a ket."""
+    flip_mask = 0
+    sign_mask = 0
+    y_count = 0
+    for qubit, pauli in pauli_term:
+        mask = 1 << (n_qubits - 1 - qubit)
+        if pauli == "X":
+            flip_mask |= mask
+        elif pauli == "Y":
+            flip_mask |= mask
+            sign_mask |= mask
+            y_count += 1
+        elif pauli == "Z":
+            sign_mask |= mask
+        else:
+            raise ValueError(f"unsupported Pauli factor: {pauli}")
+    return flip_mask, sign_mask, 1j**y_count
+
+
+def physical_clifford_matrix(frame, full_indices):
+    """Build Hc only on the physical Clifford-frame determinant support.
+
+    This applies every Pauli word in the transformed Hamiltonian directly to
+    the physical computational-basis states.  It avoids making a full
+    2**n_qubits sparse matrix or separately tapering every sector pair.
+    """
+    dimension = len(full_indices)
+    index_to_position = {
+        int(full_index): position for position, full_index in enumerate(full_indices)
+    }
+    rows = []
+    columns = []
+    values = []
+
+    for pauli_term, coefficient in frame["hamiltonian"].terms.items():
+        flip_mask, sign_mask, y_phase = pauli_term_action_masks(
+            pauli_term, frame["n_qubits"]
+        )
+        for column, source_index in enumerate(full_indices):
+            target_index = int(source_index) ^ flip_mask
+            row = index_to_position.get(target_index)
+            if row is None:
+                continue
+            sign = -1.0 if (int(source_index) & sign_mask).bit_count() % 2 else 1.0
+            rows.append(row)
+            columns.append(column)
+            values.append(complex(coefficient) * y_phase * sign)
+
+    matrix = scipy.sparse.coo_matrix(
+        (values, (rows, columns)), shape=(dimension, dimension), dtype=complex
+    ).tocsr()
+    return 0.5 * (matrix + matrix.getH())
+
+
+def lowest_sector_eigenpairs(matrix, n_roots):
+    """Return the requested lowest eigenpairs of one Hermitian sector block."""
+    dimension = matrix.shape[0]
+    if dimension == 0:
+        raise ValueError("sector has no physical determinants")
+
+    root_count = min(max(1, int(n_roots)), dimension)
+    if dimension <= 2 or root_count >= dimension - 1:
+        energies, vectors = np.linalg.eigh(matrix.toarray())
+        return energies[:root_count], vectors[:, :root_count], "dense"
+
+    energies, vectors = scipy.sparse.linalg.eigsh(
+        matrix,
+        k=root_count,
+        which="SA",
+        tol=1e-12,
+    )
+    order = np.argsort(energies)
+    return energies[order], vectors[:, order], "eigsh"
+
+
 def solve_tapered_sector(frame, label, physical_indices, n_roots):
     """Solve low roots of one physical tapered sector."""
     operator = tapered_operator(frame, label, label)
@@ -316,48 +417,57 @@ def solve_tapered_sector(frame, label, physical_indices, n_roots):
         physical_indices,
     )
     matrix = 0.5 * (matrix + matrix.getH())
-    dimension = matrix.shape[0]
-    if dimension == 0:
-        raise ValueError(f"sector {label} has no physical determinants")
-
-    root_count = min(max(1, int(n_roots)), dimension)
-    if dimension <= 2 or root_count >= dimension - 1:
-        energies, vectors = np.linalg.eigh(matrix.toarray())
-        energies = energies[:root_count]
-        vectors = vectors[:, :root_count]
-        solver = "dense"
-    else:
-        energies, vectors = scipy.sparse.linalg.eigsh(
-            matrix,
-            k=root_count,
-            which="SA",
-            tol=1e-12,
-        )
-        order = np.argsort(energies)
-        energies = energies[order]
-        vectors = vectors[:, order]
-        solver = "eigsh"
+    energies, vectors, solver = lowest_sector_eigenpairs(matrix, n_roots)
 
     return {
         "label": tuple(label),
         "operator": operator,
+        # Keep the restricted diagonal block so coupled-space construction does
+        # not taper and restrict the same sector a second time.
+        "matrix": matrix,
         "physical_indices": list(physical_indices),
         "energies": np.real_if_close(energies),
         "vectors": vectors,
-        "dimension": int(dimension),
+        "dimension": int(matrix.shape[0]),
         "solver": solver,
         "pauli_count": len(operator.terms),
         "lcu_one_norm": float(sum(abs(complex(value)) for value in operator.terms.values())),
     }
 
 
+def solve_physical_clifford_sector(
+    physical_matrix,
+    label,
+    residual_indices,
+    physical_positions,
+    n_roots,
+):
+    """Solve one sector by slicing a prebuilt physical Clifford-frame matrix."""
+    positions = np.asarray(physical_positions, dtype=int)
+    matrix = physical_matrix[positions, :][:, positions]
+    matrix = 0.5 * (matrix + matrix.getH())
+    energies, vectors, solver = lowest_sector_eigenpairs(matrix, n_roots)
+    return {
+        "label": tuple(label),
+        "matrix": matrix,
+        "physical_indices": list(residual_indices),
+        "physical_positions": list(physical_positions),
+        "energies": np.real_if_close(energies),
+        "vectors": vectors,
+        "dimension": int(matrix.shape[0]),
+        "solver": solver,
+    }
+
+
 def pauli_lcu_is_hermitian(operator, n_qubits, atol=1e-10):
-    """Check Hermiticity using the sparse matrix representation."""
-    matrix = of.get_sparse_operator(operator, n_qubits=n_qubits).tocsr()
-    difference = matrix - matrix.getH()
-    if difference.nnz == 0:
-        return True
-    return bool(np.max(np.abs(difference.data)) <= atol)
+    """Check Hermiticity without materializing the full Pauli matrix.
+
+    Each Pauli word is Hermitian, so a QubitOperator is Hermitian exactly when
+    every collected Pauli coefficient is real.  The qubit count is retained in
+    the interface for compatibility with existing callers.
+    """
+    del n_qubits
+    return all(abs(complex(coefficient).imag) <= atol for coefficient in operator.terms.values())
 
 
 def sector_reference_amplitudes(transformed_state, label, residual_indices, n_residual_qubits):
@@ -386,11 +496,12 @@ def sector_state_candidates(sector_results):
     return candidates
 
 
-def candidate_hamiltonian(frame, candidates):
-    """Build the coupled Hamiltonian in the tapered sector-state basis."""
+def candidate_hamiltonian(frame, candidates, block_cache=None):
+    """Build the coupled Hamiltonian from cached tapered sector-pair blocks."""
     dimension = len(candidates)
     h_coupled = np.zeros((dimension, dimension), dtype=complex)
-    block_cache = {}
+    if block_cache is None:
+        block_cache = {}
 
     for i, bra in enumerate(candidates):
         for j in range(i, dimension):

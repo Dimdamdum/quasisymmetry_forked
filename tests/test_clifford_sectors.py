@@ -2,6 +2,7 @@ import numpy as np
 import openfermion as of
 
 from chemistry import fcidump_data, load_moldata
+from metrics import build_coupled_block_cache, build_physical_coupled_block_cache
 from optimize_symmetries import get_fci
 from src.clifford_sectors import (
     apply_clifford_to_basis_bits,
@@ -11,11 +12,13 @@ from src.clifford_sectors import (
     load_symmetry_manifest,
     molecular_hamiltonian_to_jw,
     occupation_bits,
+    physical_clifford_matrix,
     perturbative_coupled_energy_curve,
     physical_sector_indices,
     sector_state_candidates,
     save_symmetry_manifest,
     solve_tapered_sector,
+    solve_physical_clifford_sector,
     tapered_operator,
     z_symmetries_from_parity_matrix,
 )
@@ -45,6 +48,46 @@ def test_diagonal_and_off_diagonal_tapering_matches_explicit_blocks():
     block_01 = of.get_sparse_operator(tapered_operator(frame, (0,), (1,)), 1).toarray()
     block_10 = of.get_sparse_operator(tapered_operator(frame, (1,), (0,)), 1).toarray()
     assert np.allclose(block_01, block_10.conj().T, atol=1e-12)
+
+
+def test_physical_clifford_matrix_matches_tapered_blocks():
+    hamiltonian = (
+        0.7 * of.QubitOperator("Z0")
+        + 0.2 * of.QubitOperator("X0 X1")
+        - 0.3 * of.QubitOperator("Y0 Y1")
+        + 0.4 * of.QubitOperator("Z1")
+    )
+    frame = build_clifford_frame(hamiltonian, [of.QubitOperator("Z0")], 2)
+    physical_matrix = physical_clifford_matrix(frame, [0, 1, 2, 3])
+    supports = {(0,): [0, 1], (1,): [2, 3]}
+    residual_indices = {(0,): [0, 1], (1,): [0, 1]}
+
+    for bra_label, bra_support in supports.items():
+        for ket_label, ket_support in supports.items():
+            direct = physical_matrix[bra_support, :][:, ket_support].toarray()
+            tapered = of.get_sparse_operator(
+                tapered_operator(frame, bra_label, ket_label), 1
+            ).toarray()
+            assert np.allclose(direct, tapered, atol=1e-12)
+
+    sector_results = {
+        label: solve_physical_clifford_sector(
+            physical_matrix,
+            label,
+            residual_indices[label],
+            supports[label],
+            1,
+        )
+        for label in supports
+    }
+    candidates = sector_state_candidates(sector_results)
+    cache = build_physical_coupled_block_cache(
+        physical_matrix,
+        sector_results,
+        candidates,
+    )
+    coupled, _ = candidate_hamiltonian(frame, candidates, cache)
+    assert np.allclose(coupled, coupled.conj().T, atol=1e-12)
 
 
 def test_signed_symmetry_manifest_round_trip(tmp_path):
@@ -85,6 +128,29 @@ def test_perturbative_curve_stops_at_requested_accuracy():
     assert curve["K"] == 2
     assert len(curve["order"]) == 2
     assert len(curve["energies"]) == 2
+
+
+def test_cached_coupled_blocks_match_direct_construction():
+    hamiltonian = (
+        0.4 * of.QubitOperator("Z0")
+        - 0.2 * of.QubitOperator("Z1")
+        + 0.3 * of.QubitOperator("X0")
+    )
+    frame = build_clifford_frame(hamiltonian, [of.QubitOperator("Z0 Z1")], 2)
+    physical_sectors = {(0,): [0, 1], (1,): [0, 1]}
+    sector_results = {
+        label: solve_tapered_sector(frame, label, indices, 1)
+        for label, indices in physical_sectors.items()
+    }
+    candidates = sector_state_candidates(sector_results)
+
+    direct, _ = candidate_hamiltonian(frame, candidates)
+    cache = build_coupled_block_cache(frame, sector_results, candidates, parallel=False)
+    cached, returned_cache = candidate_hamiltonian(frame, candidates, cache)
+
+    assert set(cache) == {((0,), (0,)), ((0,), (1,)), ((1,), (1,))}
+    assert returned_cache is cache
+    assert np.allclose(cached, direct, atol=1e-12)
 
 
 def test_fixed_particle_basis_mapping_matches_clifford_state_action():

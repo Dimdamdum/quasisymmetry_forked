@@ -39,10 +39,13 @@ from src.clifford_sectors import (
     pauli_lcu_is_hermitian,
     parse_sector_labels,
     perturbative_coupled_energy_curve,
-    physical_sector_indices,
+    physical_clifford_basis,
+    physical_clifford_matrix,
     qubit_operator_to_data,
     reference_candidate_order,
+    restricted_operator_matrix,
     sector_state_candidates,
+    solve_physical_clifford_sector,
     solve_tapered_sector,
     tapered_operator,
     z_symmetries_from_parity_matrix,
@@ -313,6 +316,116 @@ def solve_clifford_sectors(frame, physical_sectors, labels, n_roots, parallel):
     return results
 
 
+def solve_physical_clifford_sectors(physical_matrix, physical_basis, labels, n_roots):
+    """Solve sector blocks by slicing one physical Clifford-frame matrix."""
+    results = {}
+    for label in labels:
+        results[label] = solve_physical_clifford_sector(
+            physical_matrix,
+            label,
+            physical_basis["residual_indices"][label],
+            physical_basis["physical_positions"][label],
+            n_roots,
+        )
+    return results
+
+
+def build_tapered_block_task(data):
+    """Build one off-diagonal tapered block in a worker-safe form."""
+    operator = tapered_operator(
+        data["frame"], tuple(data["bra_label"]), tuple(data["ket_label"])
+    )
+    matrix = restricted_operator_matrix(
+        operator,
+        data["frame"]["n_residual_qubits"],
+        data["bra_indices"],
+        data["ket_indices"],
+    )
+    return {
+        "key": (tuple(data["bra_label"]), tuple(data["ket_label"])),
+        "matrix": matrix,
+    }
+
+
+def build_coupled_block_cache(frame, sector_results, candidates, parallel):
+    """Reuse diagonal blocks and build each distinct off-diagonal block once."""
+    cache = {}
+    labels = sorted({tuple(candidate["label"]) for candidate in candidates})
+    for label in labels:
+        cache[(label, label)] = sector_results[label]["matrix"]
+
+    solve_frame = {
+        "hamiltonian": frame["hamiltonian"],
+        "n_symmetries": frame["n_symmetries"],
+        "n_residual_qubits": frame["n_residual_qubits"],
+    }
+    tasks = []
+    for bra_index, bra_label in enumerate(labels):
+        for ket_label in labels[bra_index + 1:]:
+            tasks.append(
+                {
+                    "frame": solve_frame,
+                    "bra_label": bra_label,
+                    "ket_label": ket_label,
+                    "bra_indices": sector_results[bra_label]["physical_indices"],
+                    "ket_indices": sector_results[ket_label]["physical_indices"],
+                }
+            )
+
+    if parallel and tasks:
+        with MPIPoolExecutor() as executor:
+            for result in executor.map(build_tapered_block_task, tasks):
+                cache[result["key"]] = result["matrix"]
+    else:
+        for task in tasks:
+            result = build_tapered_block_task(task)
+            cache[result["key"]] = result["matrix"]
+    return cache
+
+
+def build_physical_coupled_block_cache(physical_matrix, sector_results, candidates):
+    """Slice coupled blocks from one physical Clifford-frame matrix."""
+    cache = {}
+    labels = sorted({tuple(candidate["label"]) for candidate in candidates})
+    for label in labels:
+        cache[(label, label)] = sector_results[label]["matrix"]
+
+    for bra_index, bra_label in enumerate(labels):
+        bra_positions = np.asarray(
+            sector_results[bra_label]["physical_positions"], dtype=int
+        )
+        for ket_label in labels[bra_index + 1:]:
+            ket_positions = np.asarray(
+                sector_results[ket_label]["physical_positions"], dtype=int
+            )
+            cache[(bra_label, ket_label)] = physical_matrix[bra_positions, :][
+                :, ket_positions
+            ]
+    return cache
+
+
+def sector_result_metadata(sector_results, frame):
+    """Return JSON-safe sector diagnostics without expanding Pauli matrices."""
+    return [
+        {
+            "label": list(label),
+            "dimension": result["dimension"],
+            "energies": [float(np.real(value)) for value in result["energies"]],
+            "solver": result["solver"],
+            "pauli_count": result.get("pauli_count"),
+            "lcu_one_norm": result.get("lcu_one_norm"),
+            "hermitian": (
+                pauli_lcu_is_hermitian(
+                    result["operator"], frame["n_residual_qubits"]
+                )
+                if "operator" in result
+                else None
+            ),
+        }
+        for label, result in sorted(sector_results.items())
+    ]
+
+
 def save_tapered_lcus(path, frame, sector_results, block_labels):
     """Save diagonal and required off-diagonal tapered Pauli LCUs."""
     diagonal = []
@@ -371,12 +484,13 @@ def run_clifford_metrics(args, input_data, out_data):
     rotated_hamiltonian = moldata.hamiltonian.rotated(rotation)
     jw_hamiltonian = molecular_hamiltonian_to_jw(rotated_hamiltonian, moldata.nelec)
     frame = build_clifford_frame(jw_hamiltonian, symmetries, 2 * moldata.norb)
-    physical_sectors = physical_sector_indices(
+    physical_basis = physical_clifford_basis(
         moldata.norb,
         moldata.nelec,
         frame["clifford"],
         frame["n_symmetries"],
     )
+    physical_sectors = physical_basis["residual_indices"]
     timings["build_clifford_frame"] = time.time() - stage_start
 
     requested_labels = parse_sector_labels(args.sector_labels, frame["n_symmetries"])
@@ -387,65 +501,113 @@ def run_clifford_metrics(args, input_data, out_data):
 
     n_roots = args.n_roots if args.n_roots is not None else args.states_per_sector
     stage_start = time.time()
-    sector_results = solve_clifford_sectors(
-        frame,
-        physical_sectors,
-        labels,
-        n_roots,
-        args.parallel_sectors,
-    )
+    physical_matrix = None
+    if args.clifford_block_builder == "physical":
+        physical_matrix = physical_clifford_matrix(frame, physical_basis["full_indices"])
+        timings["build_physical_clifford_matrix"] = time.time() - stage_start
+        stage_start = time.time()
+        sector_results = solve_physical_clifford_sectors(
+            physical_matrix,
+            physical_basis,
+            labels,
+            n_roots,
+        )
+    else:
+        sector_results = solve_clifford_sectors(
+            frame,
+            physical_sectors,
+            labels,
+            n_roots,
+            args.parallel_sectors,
+        )
     timings["solve_sectors"] = time.time() - stage_start
 
     stage_start = time.time()
-    candidates = sector_state_candidates(sector_results)
-    h_coupled, block_cache = candidate_hamiltonian(frame, candidates)
-    timings["build_coupled_hamiltonian"] = time.time() - stage_start
+    exact_energy, fci_vector = get_fci(dumpdata)
+    timings["solve_parent_fci"] = time.time() - stage_start
+
+    decoupled_energy = min(
+        float(result["energies"][0]) for result in sector_results.values()
+    )
+    candidates = []
+    block_cache = {}
+    reference_weights = np.asarray([])
+    curve = {"order": [], "energies": [], "K": None, "converged": False}
+    selected_candidates = []
+    selected_sectors = []
+
+    if not args.decoupled_only:
+        candidates = sector_state_candidates(sector_results)
+        stage_start = time.time()
+        if args.clifford_block_builder == "physical":
+            block_cache = build_physical_coupled_block_cache(
+                physical_matrix,
+                sector_results,
+                candidates,
+            )
+        else:
+            block_cache = build_coupled_block_cache(
+                frame,
+                sector_results,
+                candidates,
+                args.parallel_coupled_blocks,
+            )
+        timings["build_coupled_blocks"] = time.time() - stage_start
+
+        stage_start = time.time()
+        h_coupled, _ = candidate_hamiltonian(frame, candidates, block_cache)
+        timings["assemble_coupled_hamiltonian"] = time.time() - stage_start
+
+        stage_start = time.time()
+        rotated_fci_vector = ffsim.apply_orbital_rotation(
+            fci_vector,
+            rotation,
+            norb=moldata.norb,
+            nelec=moldata.nelec,
+        )
+        jw_reference = ci_vector_to_jw_state(
+            rotated_fci_vector,
+            moldata.norb,
+            moldata.nelec,
+        )
+        transformed_reference = frame["clifford"].transform_state(jw_reference)
+        reference_weights = candidate_reference_weights(
+            frame,
+            candidates,
+            transformed_reference,
+        )
+
+        if args.coupled_energy_method == "reference":
+            order = reference_candidate_order(reference_weights)
+            curve = coupled_energy_curve(
+                h_coupled,
+                order,
+                exact_energy=exact_energy,
+                tolerance=CHEMICAL_PRECISION,
+            )
+        else:
+            curve = perturbative_coupled_energy_curve(
+                h_coupled,
+                exact_energy=exact_energy,
+                tolerance=CHEMICAL_PRECISION,
+            )
+        timings["select_coupled_space"] = time.time() - stage_start
+
+        selected_count = curve["K"] if curve["K"] is not None else len(curve["order"])
+        selected_candidate_indices = curve["order"][:selected_count]
+        selected_candidates = [candidates[index] for index in selected_candidate_indices]
+        selected_sectors = sorted(
+            set(candidate["label"] for candidate in selected_candidates)
+        )
 
     stage_start = time.time()
-    exact_energy, fci_vector = get_fci(dumpdata)
-    rotated_fci_vector = ffsim.apply_orbital_rotation(
-        fci_vector,
-        rotation,
-        norb=moldata.norb,
-        nelec=moldata.nelec,
-    )
-    jw_reference = ci_vector_to_jw_state(
-        rotated_fci_vector,
-        moldata.norb,
-        moldata.nelec,
-    )
-    transformed_reference = frame["clifford"].transform_state(jw_reference)
-    reference_weights = candidate_reference_weights(
-        frame,
-        candidates,
-        transformed_reference,
-    )
-
-    if args.coupled_energy_method == "reference":
-        order = reference_candidate_order(reference_weights)
-        curve = coupled_energy_curve(
-            h_coupled,
-            order,
-            exact_energy=exact_energy,
-            tolerance=CHEMICAL_PRECISION,
-        )
-    else:
-        curve = perturbative_coupled_energy_curve(
-            h_coupled,
-            exact_energy=exact_energy,
-            tolerance=CHEMICAL_PRECISION,
-        )
-    timings["select_coupled_space"] = time.time() - stage_start
-
-    decoupled_energy = min(float(result["energies"][0]) for result in sector_results.values())
-    selected_count = curve["K"] if curve["K"] is not None else len(curve["order"])
-    selected_candidate_indices = curve["order"][:selected_count]
-    selected_candidates = [candidates[index] for index in selected_candidate_indices]
-    selected_sectors = sorted(set(candidate["label"] for candidate in selected_candidates))
+    serialized_sector_results = sector_result_metadata(sector_results, frame)
+    timings["collect_sector_metadata"] = time.time() - stage_start
 
     out_data.update(
         {
             "sector_backend": "clifford",
+            "clifford_block_builder": args.clifford_block_builder,
             "symmetry_manifest": manifest_path,
             "parity_matrix": parity_matrix.tolist(),
             "clifford": {
@@ -471,10 +633,13 @@ def run_clifford_metrics(args, input_data, out_data):
             "E_decoupled": decoupled_energy,
             "dE": decoupled_energy - float(exact_energy),
             "candidate_count": len(candidates),
-            "reference_weight_sum": float(np.sum(reference_weights)),
+            "reference_weight_sum": (
+                float(np.sum(reference_weights)) if reference_weights.size else None
+            ),
+            "coupled_metrics_computed": not args.decoupled_only,
             "K": curve["K"],
             "converged": curve["converged"],
-            "E_coupled": curve["energies"][selected_count - 1] if curve["energies"] else None,
+            "E_coupled": curve["energies"][-1] if curve["energies"] else None,
             "coupled_curve": curve,
             "sector_eigenstates": [
                 [list(candidate["label"]), candidate["root"]]
@@ -485,25 +650,16 @@ def run_clifford_metrics(args, input_data, out_data):
             "relevant_sectors_total_dim": sum(
                 sector_results[label]["dimension"] for label in selected_sectors
             ),
-            "sector_results": [
-                {
-                    "label": list(label),
-                    "dimension": result["dimension"],
-                    "energies": [float(np.real(value)) for value in result["energies"]],
-                    "solver": result["solver"],
-                    "pauli_count": result["pauli_count"],
-                    "lcu_one_norm": result["lcu_one_norm"],
-                    "hermitian": pauli_lcu_is_hermitian(
-                        result["operator"], frame["n_residual_qubits"]
-                    ),
-                }
-                for label, result in sorted(sector_results.items())
-            ],
+            "sector_results": serialized_sector_results,
             "timings": timings,
         }
     )
 
     if args.save_tapered_lcu:
+        if args.clifford_block_builder != "tapered":
+            raise ValueError(
+                "--save_tapered_lcu requires --clifford_block_builder tapered"
+            )
         stage_start = time.time()
         save_tapered_lcus(
             args.save_tapered_lcu,
@@ -520,6 +676,7 @@ def run_clifford_metrics(args, input_data, out_data):
     print("Clifford backend")
     print("  parent qubits:", frame["n_qubits"])
     print("  tapered qubits:", frame["n_residual_qubits"])
+    print("  block builder:", args.clifford_block_builder)
     print("  physical sectors:", len(sector_results))
     print("  E_decoupled:", decoupled_energy)
     print("  K:", curve["K"])
@@ -566,6 +723,15 @@ if __name__ == "__main__":
         help="sector representation for FCI/Lanczos metrics",
     )
     parser.add_argument(
+        "--clifford_block_builder",
+        choices=("tapered", "physical"),
+        default="tapered",
+        help=(
+            "tapered builds one residual Pauli block per sector pair; physical "
+            "builds one Clifford-frame matrix on physical determinants"
+        ),
+    )
+    parser.add_argument(
         "--symmetry_manifest",
         default=None,
         help="ordered Z-product symmetry manifest for the Clifford backend",
@@ -579,6 +745,16 @@ if __name__ == "__main__":
         "--parallel_sectors",
         action="store_true",
         help="solve tapered sectors through mpi4py worker processes",
+    )
+    parser.add_argument(
+        "--parallel_coupled_blocks",
+        action="store_true",
+        help="build independent off-diagonal tapered blocks through mpi4py workers",
+    )
+    parser.add_argument(
+        "--decoupled_only",
+        action="store_true",
+        help="stop after diagonal sector blocks and the decoupled-energy metric",
     )
     parser.add_argument(
         "--save_tapered_lcu",
