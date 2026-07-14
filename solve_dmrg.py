@@ -2,8 +2,8 @@
 
 This is the DMRG counterpart of the FCI reference used across the pipeline.
 The optimized MPS (and optional sector MPSs) are persisted under a store
-directory so later stages (``optimize_symmetries.py --backend dmrg``,
-``metrics.py --solver dmrg``, notebooks) can reload them without re-solving.
+directory so later stages (``optimize_symmetries.py --reference dmrg``,
+``metrics.py --backend dmrg``, notebooks) can reload them without re-solving.
 
 Examples
 --------

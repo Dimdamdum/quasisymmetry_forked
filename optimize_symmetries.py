@@ -63,7 +63,11 @@ except ImportError as exc:
 else:
     _FCI_STACK_ERROR = None
 
-from src.workflow_cli import add_optimize_workflow_args
+from src.workflow_cli import (
+    add_optimize_workflow_args,
+    optimize_cost_engine,
+    print_workflow_banner,
+)
 
 
 def commutator_cost(moldata: ffsim.MolecularData,
@@ -470,16 +474,23 @@ def optimize_fcidump(
  
  
 if __name__=="__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Orbital optimization of approximate symmetries. "
+            "Use --reference to choose the cost wavefunction "
+            "(fci/hf → ffsim CI costs; dmrg → Block2 MPS costs). "
+            "See --help epilog for examples."
+        ),
+    )
     parser.add_argument("molpath")
     parser.add_argument("parity", nargs="?", default=None,
                         help="path to the incidence matrix of symmetries")
     parser.add_argument("--seniority", action="store_true")
     add_optimize_workflow_args(parser)
     parser.add_argument("--multiply_bond_dim", type=int, default=None,
-                        help="bond dimension for MPO-MPS multiplies (dmrg backend)")
+                        help="bond dimension for MPO-MPS multiplies (--reference dmrg)")
     parser.add_argument("--multiply_sweeps", type=int, default=8,
-                        help="sweeps per MPO-MPS multiply (dmrg backend)")
+                        help="sweeps per MPO-MPS multiply (--reference dmrg)")
     parser.add_argument(
         "--cost_function",
         choices=("NC", "variance", "decoupled", "fixed_sector", "switching_sector"),
@@ -489,7 +500,7 @@ if __name__=="__main__":
         "--sector_backend",
         choices=("determinant", "clifford"),
         default="determinant",
-        help="sector representation used by the energy objectives",
+        help="sector representation used by the energy objectives (CI path only)",
     )
     parser.add_argument(
         "--symmetry_manifest",
@@ -529,33 +540,33 @@ if __name__=="__main__":
                         help="save rotated orbital energies (h1e diagonal) to this .npy file")
 
     args = parser.parse_args()
+    print_workflow_banner(
+        "optimize",
+        args.reference,
+        cost_function=args.cost_function,
+        bond_dim=args.bond_dim if args.reference == "dmrg" else None,
+    )
 
-    # ── MPS-native backend (NC / variance only) ───────────────────────────────
-    if args.backend == "dmrg":
+    # ── MPS-native path (--reference dmrg; NC / variance only) ────────────────
+    if args.reference == "dmrg":
         from src.dmrg_costs import MultiplyConfig, build_dmrg_orbital_costs
         from src.dmrg_solver import DMRGConfig
 
         if args.cost_function not in ("NC", "variance"):
             parser.error(
-                "--backend dmrg only supports cost_function NC or variance "
-                "(decoupled / sector modes need the statevector FCI path)"
+                "--reference dmrg only supports cost_function NC or variance "
+                "(decoupled / sector modes need --reference fci or hf)"
             )
         if args.sector_backend != "determinant":
             parser.error(
-                "--sector_backend clifford is a statevector-sector backend; "
-                "use --backend statevector"
+                "--sector_backend clifford requires --reference fci or hf"
             )
         if args.seniority:
-            parser.error("--backend dmrg requires a parity matrix (not --seniority)")
+            parser.error("--reference dmrg requires a parity matrix (not --seniority)")
         if args.parity is None:
-            parser.error("--backend dmrg requires a parity matrix file")
-        if args.reference not in ("dmrg", "fci"):
-            parser.error(
-                "--backend dmrg uses the DMRG ground state as reference; "
-                "use --reference dmrg (or fci as an alias)"
-            )
+            parser.error("--reference dmrg requires a parity matrix file")
         if args.orbene_npy is not None:
-            parser.error("--orbene_npy is not supported with --backend dmrg")
+            parser.error("--orbene_npy is not supported with --reference dmrg")
 
         parity_matrix = np.atleast_2d(np.loadtxt(args.parity, dtype=int))
         store_dir = args.wavefunction_dir
@@ -632,7 +643,8 @@ if __name__=="__main__":
                 + "_" + str(uuid4())[:6] + ".json"
             )
         out_data = {
-            "backend": "dmrg",
+            "reference": "dmrg",
+            "backend": optimize_cost_engine("dmrg"),
             "cost_before": float(cost_before),
             "cost_after": float(res.fun),
             "converged": bool(res.success),
@@ -651,8 +663,8 @@ if __name__=="__main__":
 
     if _FCI_STACK_ERROR is not None:
         raise SystemExit(
-            f"--backend statevector requires pyscf/ffsim ({_FCI_STACK_ERROR}). "
-            "Use --backend dmrg on FCIDUMP files without those packages, "
+            f"--reference {args.reference} requires pyscf/ffsim ({_FCI_STACK_ERROR}). "
+            "Use --reference dmrg on FCIDUMP files without those packages, "
             "or install the FCI stack / use optimize_dmrg.py."
         )
 
@@ -703,24 +715,13 @@ if __name__=="__main__":
                 parity_matrix, moldata.norb
             )
 
-    # ── reference state ───────────────────────────────────────────────────────
+    # ── reference state (CI / ffsim path) ─────────────────────────────────────
     if args.reference == "fci":
         _, state = get_fci(dumpdata)
     elif args.reference == "hf":
         state = ffsim.hartree_fock_state(moldata.norb, moldata.nelec)
-    elif args.reference == "dmrg":
-        from src.dmrg_solver import DMRGConfig, get_dmrg_reference
-
-        e_dmrg, state = get_dmrg_reference(
-            dumpdata,
-            store_dir=args.wavefunction_dir,
-            config=DMRGConfig(max_bond_dim=args.bond_dim),
-            n_threads=args.n_threads,
-            reuse=True,
-        )
-        print("DMRG reference energy: {0:4.6f}".format(e_dmrg))
     else:
-        raise ValueError("reference must be fci, hf or dmrg")
+        raise ValueError("reference must be fci or hf on the CI path")
     # Wrap as callable; optimize_fcidump will call reference_fn(moldata) internally.
     # Using a lambda that returns the already-computed state avoids running the
     # solver a second time.
@@ -883,6 +884,8 @@ if __name__=="__main__":
                    + "_" + str(uuid4())[:6] + ".json")
 
     out_data = {}
+    out_data["reference"] = args.reference
+    out_data["backend"] = optimize_cost_engine(args.reference)
     out_data["cost_before"] = cost_before
     out_data["cost_after"] = res.fun
     out_data["converged"] = res.success

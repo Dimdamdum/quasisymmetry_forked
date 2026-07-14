@@ -31,7 +31,8 @@ from src.davidson_solver import solve_sector_davidson
 from src.sector_utils import subspace_matrix, symmetry_sectors
 from src.workflow_cli import (
     add_metrics_workflow_args,
-    resolve_metrics_reference,
+    print_workflow_banner,
+    validate_metrics_workflow,
 )
 from src.clifford_sectors import (
     build_clifford_frame,
@@ -724,7 +725,13 @@ def run_clifford_metrics(args, input_data, out_data):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Calculate the metrics")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Sector metrics (E_decoupled, K) from an OO JSON. "
+            "Use --reference for the comparison energy/state and --backend "
+            "for the sector eigensolver (see --help epilog for valid combinations)."
+        ),
+    )
     parser.add_argument(
         "input_data", help="JSON you got from optimize_symmetries.py"
     )
@@ -807,7 +814,14 @@ if __name__ == "__main__":
              "search. DMRG uses one-shot PT.",
     )
     args = parser.parse_args()
-    args.reference = resolve_metrics_reference(args.backend, args.reference)
+    validate_metrics_workflow(parser, args)
+    print_workflow_banner(
+        "metrics",
+        args.reference,
+        args.backend,
+        bond_dim=args.bond_dim if args.backend == "dmrg" or args.reference == "dmrg" else None,
+        sector_backend=args.sector_backend,
+    )
 
     with open(args.input_data, "r") as fp:
         input_data = json.load(fp)
@@ -821,8 +835,8 @@ if __name__ == "__main__":
     if args.sector_backend == "clifford":
         if args.backend != "fci":
             parser.error(
-                "Clifford sector metrics currently use the fixed-spin "
-                "FCI/Lanczos backend (--backend fci)"
+                "--sector_backend clifford currently requires --backend fci "
+                "(determinant eigsh/eigh path)"
             )
         run_clifford_metrics(args, input_data, out_data)
         with open(outname, "w") as fp:
@@ -831,11 +845,6 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     if args.backend == "dmrg":
-        if args.reference != "dmrg":
-            parser.error(
-                "--backend dmrg uses the Block2 ground state as reference; "
-                "use --reference dmrg"
-            )
         _run_dmrg_from_oo_json(input_data, args, outname, out_data)
         raise SystemExit(0)
 
