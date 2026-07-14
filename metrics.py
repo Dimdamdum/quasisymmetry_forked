@@ -27,7 +27,12 @@ from src.energy_diagnostics import (
     sector_data_from_gs_pairs,
     state_labels_for_columns,
 )
+from src.davidson_solver import solve_sector_davidson
 from src.sector_utils import subspace_matrix, symmetry_sectors
+from src.workflow_cli import (
+    add_metrics_workflow_args,
+    print_workflow_banner,
+)
 from src.clifford_sectors import (
     build_clifford_frame,
     candidate_hamiltonian,
@@ -180,6 +185,35 @@ def solve_eigs(data):
     }
 
 
+def solve_eigs_davidson(data):
+    """MPI worker: PySCF Davidson on the same sector block as ``solve_eigs``."""
+    from mpi4py import MPI
+
+    moldata = data["moldata"]
+    rotated_h = data["rotated_h"]
+    sector_bitstrings = data["sector_bitstrings"]
+    rotated_h_linop = ffsim.linear_operator(
+        rotated_h, norb=moldata.norb, nelec=moldata.nelec
+    )
+
+    h_subspace = subspace_matrix(rotated_h_linop, sector_bitstrings)
+    nroots = min(int(data["states_per_sector"]), h_subspace.shape[0])
+    w, v, meta = solve_sector_davidson(
+        h_subspace,
+        nroots=nroots,
+        tol=data.get("davidson_tol", 1e-12),
+        max_cycle=data.get("davidson_max_cycle", 50),
+        max_space=data.get("davidson_max_space", 12),
+    )
+    return {
+        "sector_label": data["sector_label"],
+        "sector_eigs": (w, v),
+        "meta": meta,
+        "rank": MPI.COMM_WORLD.Get_rank(),
+        "hostname": MPI.Get_processor_name(),
+    }
+
+
 def _run_dmrg_from_oo_json(input_data, args, outname, out_data):
     """MPS-native metrics path using OO JSON (molpath / parity / rotation)."""
     from src.dmrg_diagnostics import format_metrics_report, run_dmrg_metrics
@@ -231,6 +265,7 @@ def _run_dmrg_from_oo_json(input_data, args, outname, out_data):
     states_per_sector = (
         args.states_per_sector if args.states_per_sector < 50 else 5
     )
+    solve_start = time.perf_counter()
     report = run_dmrg_metrics(
         solver,
         parity_matrix,
@@ -241,11 +276,14 @@ def _run_dmrg_from_oo_json(input_data, args, outname, out_data):
         compute_k=True,
         compute_entanglement=args.entanglement,
     )
+    solve_time_s = time.perf_counter() - solve_start
     lines = format_metrics_report(report)
     for line in lines:
         print(line)
 
-    out_data["solver"] = "dmrg"
+    out_data["backend"] = "dmrg"
+    out_data["solver"] = "dmrg"  # alias for older consumers
+    out_data["solve_time_s"] = float(solve_time_s)
     out_data["report_lines"] = lines
     out_data["E_FCI"] = report.e_reference
     out_data["E_decoupled"] = report.decoupled.e_decoupled
@@ -523,7 +561,7 @@ def run_clifford_metrics(args, input_data, out_data):
     timings["solve_sectors"] = time.time() - stage_start
 
     stage_start = time.time()
-    exact_energy, fci_vector = get_fci(dumpdata)
+    exact_energy, _ = get_fci(dumpdata)
     timings["solve_parent_fci"] = time.time() - stage_start
 
     decoupled_energy = min(
@@ -559,25 +597,33 @@ def run_clifford_metrics(args, input_data, out_data):
         timings["assemble_coupled_hamiltonian"] = time.time() - stage_start
 
         stage_start = time.time()
-        rotated_fci_vector = ffsim.apply_orbital_rotation(
-            fci_vector,
-            rotation,
-            norb=moldata.norb,
-            nelec=moldata.nelec,
-        )
-        jw_reference = ci_vector_to_jw_state(
-            rotated_fci_vector,
-            moldata.norb,
-            moldata.nelec,
-        )
-        transformed_reference = frame["clifford"].transform_state(jw_reference)
-        reference_weights = candidate_reference_weights(
-            frame,
-            candidates,
-            transformed_reference,
-        )
-
         if args.coupled_energy_method == "reference":
+            from src.dmrg_solver import DMRGConfig, get_dmrg_reference
+
+            _, overlap_vec = get_dmrg_reference(
+                dumpdata,
+                store_dir=args.wavefunction_dir,
+                config=DMRGConfig(max_bond_dim=args.bond_dim),
+                n_threads=args.n_threads,
+                reuse=True,
+            )
+            rotated_overlap = ffsim.apply_orbital_rotation(
+                overlap_vec,
+                rotation,
+                norb=moldata.norb,
+                nelec=moldata.nelec,
+            )
+            jw_reference = ci_vector_to_jw_state(
+                rotated_overlap,
+                moldata.norb,
+                moldata.nelec,
+            )
+            transformed_reference = frame["clifford"].transform_state(jw_reference)
+            reference_weights = candidate_reference_weights(
+                frame,
+                candidates,
+                transformed_reference,
+            )
             order = reference_candidate_order(reference_weights)
             curve = coupled_energy_curve(
                 h_coupled,
@@ -585,6 +631,7 @@ def run_clifford_metrics(args, input_data, out_data):
                 exact_energy=exact_energy,
                 tolerance=CHEMICAL_PRECISION,
             )
+            out_data["overlap_reference"] = "dmrg"
         else:
             curve = perturbative_coupled_energy_curve(
                 h_coupled,
@@ -685,22 +732,19 @@ def run_clifford_metrics(args, input_data, out_data):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Calculate the metrics")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Sector metrics (E_decoupled, K) from an OO JSON. "
+            "Use --backend for the sector eigensolver; "
+            "--coupled_energy_method reference uses a DMRG wavefunction for "
+            "overlap ordering (PT needs no overlap reference). "
+            "See --help epilog."
+        ),
+    )
     parser.add_argument(
         "input_data", help="JSON you got from optimize_symmetries.py"
     )
-    parser.add_argument(
-        "--solver",
-        choices=("fci", "dmrg"),
-        default="fci",
-        help="diagnostics backend (default: fci; dmrg uses MPS-native E_dec/K)",
-    )
-    parser.add_argument("--bond_dim", type=int, default=250,
-                        help="DMRG bond dimension (only with --solver dmrg)")
-    parser.add_argument("--wavefunction_dir", default=None,
-                        help="local DMRG wavefunction store (dmrg solver)")
-    parser.add_argument("--n_threads", type=int, default=4,
-                        help="block2 threads (dmrg solver)")
+    add_metrics_workflow_args(parser)
     parser.add_argument("--penalty", type=float, default=30.0,
                         help="sector penalty for DMRG E_decoupled / K")
     parser.add_argument("--max_sectors", type=int, default=16,
@@ -708,7 +752,13 @@ if __name__ == "__main__":
     parser.add_argument("--reorder", choices=("fiedler", "gaopt"), default=None,
                         help="optional orbital reordering before DMRG")
     parser.add_argument("--entanglement", action="store_true",
-                        help="with --solver dmrg, also report orbital entropies")
+                        help="with --backend dmrg, also report orbital entropies")
+    parser.add_argument("--davidson_tol", type=float, default=1e-12,
+                        help="Davidson convergence tol (--backend davidson)")
+    parser.add_argument("--davidson_max_cycle", type=int, default=50,
+                        help="Davidson max iterations (--backend davidson)")
+    parser.add_argument("--davidson_max_space", type=int, default=12,
+                        help="Davidson max subspace size (--backend davidson)")
     parser.add_argument("--states_per_sector", type=int, default=500)
     parser.add_argument(
         "--n_roots",
@@ -767,12 +817,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--coupled_energy_method",
         choices=("reference", "perturbation"),
-        default="reference",
-        help="K_coupled selection: reference-overlap ordering (reference) or "
-             "one-shot PT ordering (perturbation), both with nested variational "
-             "search. DMRG uses one-shot PT.",
+        default="perturbation",
+        help="K selection on CI backends: perturbation=one-shot PT (default, "
+             "no overlap wavefunction); reference=overlap ordering vs a DMRG "
+             "wavefunction. --backend dmrg always uses PT.",
     )
     args = parser.parse_args()
+    print_workflow_banner(
+        "metrics",
+        backend=args.backend,
+        bond_dim=(
+            args.bond_dim
+            if args.backend == "dmrg" or args.coupled_energy_method == "reference"
+            else None
+        ),
+        sector_backend=args.sector_backend,
+        coupled_energy_method=(
+            args.coupled_energy_method if args.backend != "dmrg" else "perturbation"
+        ),
+    )
 
     with open(args.input_data, "r") as fp:
         input_data = json.load(fp)
@@ -784,10 +847,10 @@ if __name__ == "__main__":
     out_data = {"args": vars(args), "OO_data": input_data}
 
     if args.sector_backend == "clifford":
-        if args.solver != "fci":
+        if args.backend != "fci":
             parser.error(
-                "Clifford sector metrics currently use the fixed-spin "
-                "FCI/Lanczos backend"
+                "--sector_backend clifford currently requires --backend fci "
+                "(determinant eigsh/eigh path)"
             )
         run_clifford_metrics(args, input_data, out_data)
         with open(outname, "w") as fp:
@@ -795,7 +858,7 @@ if __name__ == "__main__":
         print("Saved metrics to", outname)
         raise SystemExit(0)
 
-    if args.solver == "dmrg":
+    if args.backend == "dmrg":
         _run_dmrg_from_oo_json(input_data, args, outname, out_data)
         raise SystemExit(0)
 
@@ -819,12 +882,12 @@ if __name__ == "__main__":
         rotated_h, norb=moldata.norb, nelec=moldata.nelec
     )
 
-    e_fci, fcivec = get_fci(dumpdata)
-    print("FCI ", e_fci)
-    out_data["E_FCI"] = e_fci
-    rotated_fcivec = ffsim.apply_orbital_rotation(
-        fcivec, U, norb=moldata.norb, nelec=moldata.nelec
-    )
+    e_ref, _ = get_fci(dumpdata)
+    print("FCI ", e_ref)
+
+    out_data["backend"] = args.backend
+    out_data["solver"] = args.backend  # alias for older consumers
+    out_data["E_FCI"] = e_ref
 
     print("qty of sectors ", len(sectors.keys()))
 
@@ -833,6 +896,8 @@ if __name__ == "__main__":
     size = comm.Get_size()
     print("rank and size", rank, size)
 
+    use_davidson = args.backend == "davidson"
+
     tasks = [
         {
             "moldata": moldata,
@@ -840,15 +905,37 @@ if __name__ == "__main__":
             "states_per_sector": args.states_per_sector,
             "sector_label": k,
             "sector_bitstrings": v,
+            **(
+                {
+                    "davidson_tol": args.davidson_tol,
+                    "davidson_max_cycle": args.davidson_max_cycle,
+                    "davidson_max_space": args.davidson_max_space,
+                }
+                if use_davidson
+                else {}
+            ),
         }
         for k, v in sectors.items()
     ]
 
+    worker = solve_eigs_davidson if use_davidson else solve_eigs
     sector_eigs = {}
+    sector_solver_meta = {}
+    solve_start = time.perf_counter()
     with MPIPoolExecutor() as executor:
-        for r in executor.map(solve_eigs, tasks):
+        for r in executor.map(worker, tasks):
             label = tuple(r["sector_label"])
             sector_eigs[label] = r["sector_eigs"]
+            if "meta" in r:
+                sector_solver_meta[str(list(label))] = r["meta"]
+    solve_time_s = time.perf_counter() - solve_start
+    out_data["solve_time_s"] = float(solve_time_s)
+    if sector_solver_meta:
+        out_data["sector_solver_meta"] = sector_solver_meta
+        out_data["davidson_all_converged"] = all(
+            meta.get("converged", False) for meta in sector_solver_meta.values()
+        )
+    print("sector solve_time_s", solve_time_s)
 
     sector_gs_energies = []
     for w, v in sector_eigs.items():
@@ -856,8 +943,8 @@ if __name__ == "__main__":
 
     smallest = np.min(sector_gs_energies)
 
-    de_dec = smallest - e_fci
-    print("Decoupled error ", smallest - e_fci)
+    de_dec = smallest - e_ref
+    print("Decoupled error ", de_dec)
     out_data["E_decoupled"] = smallest
     out_data["dE"] = de_dec
 
@@ -871,7 +958,7 @@ if __name__ == "__main__":
         e_coupled, k_coupled, converged, chosen_keys = coupled_energy_perturbation(
             h_apply,
             sector_data,
-            e_exact=e_fci,
+            e_exact=e_ref,
             tol=CHEMICAL_PRECISION,
         )
         print("E_coupled", e_coupled)
@@ -884,7 +971,20 @@ if __name__ == "__main__":
             print("PT coupled-energy did not converge within chemical precision")
 
     elif args.coupled_energy_method == "reference":
-        print("Calculating K directly from FCI (reference wavefunction)")
+        print("Calculating K via overlap ordering against DMRG wavefunction")
+        from src.dmrg_solver import DMRGConfig, get_dmrg_reference
+
+        _, refvec = get_dmrg_reference(
+            dumpdata,
+            store_dir=args.wavefunction_dir,
+            config=DMRGConfig(max_bond_dim=args.bond_dim),
+            n_threads=args.n_threads,
+            reuse=True,
+        )
+        rotated_refvec = ffsim.apply_orbital_rotation(
+            refvec, U, norb=moldata.norb, nelec=moldata.nelec
+        )
+        out_data["overlap_reference"] = "dmrg"
 
         full_space_vectors = []
         for k, v in sectors.items():
@@ -899,8 +999,8 @@ if __name__ == "__main__":
         k_min, e_coupled, converged, weights_order = reference_coupled_energy_k(
             h_apply,
             full_space_vectors_cat,
-            rotated_fcivec,
-            e_fci,
+            rotated_refvec,
+            e_ref,
             chemical_precision=CHEMICAL_PRECISION,
         )
         print("E_coupled (full projection)", e_coupled)

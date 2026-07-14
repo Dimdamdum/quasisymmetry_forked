@@ -1,6 +1,6 @@
 """Orbital optimization with MPS-native block2 costs (FCIDUMP-friendly).
 
-Same role as ``optimize_symmetries.py --backend dmrg``, but imports no
+Same role as ``optimize_symmetries.py --reference dmrg``, but imports no
 pyscf/ffsim so it runs on machines that only have block2 (e.g. native
 Windows). Output is the same ``x_opt`` text file consumed by
 ``metrics.py --U``, ``rotate_fcidump.py`` and ``solve_dmrg.py --U``.
