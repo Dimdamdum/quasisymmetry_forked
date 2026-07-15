@@ -221,7 +221,6 @@ def _run_dmrg_from_oo_json(input_data, args, outname, out_data):
         Block2DMRGSolver,
         DMRGConfig,
         rotate_integrals,
-        rotation_from_parameters,
     )
 
     molpath = Path(input_data["molpath"])
@@ -248,8 +247,11 @@ def _run_dmrg_from_oo_json(input_data, args, outname, out_data):
 
     rotation = np.asarray(input_data.get("rotation", []), dtype=float)
     if rotation.size:
+        from src.orbital_rotation import pairs_from_oo_data, params_to_U
+
+        pairs = pairs_from_oo_data(input_data, h1e.shape[0])
         h1e, g2e = rotate_integrals(
-            h1e, g2e, rotation_from_parameters(rotation, h1e.shape[0])
+            h1e, g2e, params_to_U(rotation, h1e.shape[0], pairs)
         )
 
     solver = Block2DMRGSolver(
@@ -518,7 +520,13 @@ def run_clifford_metrics(args, input_data, out_data):
 
     stage_start = time.time()
     rotation_parameters = np.asarray(input_data["rotation"], dtype=float)
-    rotation = x_to_rotation(rotation_parameters, moldata.norb)
+    from src.orbital_rotation import pairs_from_oo_data
+
+    rotation = x_to_rotation(
+        rotation_parameters,
+        moldata.norb,
+        pairs_from_oo_data(input_data, moldata.norb),
+    )
     rotated_hamiltonian = moldata.hamiltonian.rotated(rotation)
     jw_hamiltonian = molecular_hamiltonian_to_jw(rotated_hamiltonian, moldata.nelec)
     frame = build_clifford_frame(jw_hamiltonian, symmetries, 2 * moldata.norb)
@@ -738,7 +746,8 @@ if __name__ == "__main__":
             "Use --backend for the sector eigensolver; "
             "--coupled_energy_method reference uses a DMRG wavefunction for "
             "overlap ordering (PT needs no overlap reference). "
-            "See --help epilog."
+            "Rebuilds U from JSON rotation using orbital_rotation/irreps "
+            "when present. See --help epilog."
         ),
     )
     parser.add_argument(
@@ -875,7 +884,9 @@ if __name__ == "__main__":
     sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
 
     x = np.array(input_data["rotation"])
-    U = x_to_rotation(x, moldata.norb)
+    from src.orbital_rotation import pairs_from_oo_data
+
+    U = x_to_rotation(x, moldata.norb, pairs_from_oo_data(input_data, moldata.norb))
 
     rotated_h = moldata.hamiltonian.rotated(U)
     rotated_h_linop = ffsim.linear_operator(

@@ -68,13 +68,15 @@ from src.workflow_cli import (
     optimize_cost_engine,
     print_workflow_banner,
 )
+from src.orbital_rotation import n_params, params_to_U, resolve_orbital_rotation
 
 
 def commutator_cost(moldata: ffsim.MolecularData,
                     symmetries: list[scipy.sparse.linalg.LinearOperator],
-                    reference_state: np.ndarray) -> Callable:
+                    reference_state: np.ndarray,
+                    pairs=None) -> Callable:
     def f(x: np.ndarray) -> float:
-        U = x_to_rotation(x, moldata.norb)
+        U = x_to_rotation(x, moldata.norb, pairs)
         rotated_state = ffsim.apply_orbital_rotation(reference_state,
                                                      U,
                                                      moldata.norb,
@@ -91,9 +93,10 @@ def commutator_cost(moldata: ffsim.MolecularData,
 
 def variance_cost(moldata: ffsim.MolecularData,
                     symmetries: list[scipy.sparse.linalg.LinearOperator],
-                    reference_state: np.ndarray) -> Callable:
+                    reference_state: np.ndarray,
+                    pairs=None) -> Callable:
     def f(x: np.ndarray) -> float:
-        U = x_to_rotation(x, moldata.norb)
+        U = x_to_rotation(x, moldata.norb, pairs)
         rotated_state = ffsim.apply_orbital_rotation(reference_state,
                                                      U,
                                                      moldata.norb,
@@ -173,12 +176,8 @@ def parity_matrix_to_quasisymmetries(parity_matrix: np.ndarray,
         raise ValueError("shape[1] must be norb or 2 * norb")
 
 
-def x_to_rotation(x: np.ndarray, norb: int) -> np.ndarray:
-    iu = np.triu_indices(norb, k=1)
-    rotation_generator = np.zeros((norb, norb))
-    rotation_generator[iu] = x
-    rotation_generator -= rotation_generator.T
-    return scipy.linalg.expm(rotation_generator)
+def x_to_rotation(x: np.ndarray, norb: int, pairs=None) -> np.ndarray:
+    return params_to_U(x, norb, pairs)
 
 
 def get_fci(dumpdata: dict, flatten: bool = True) -> tuple[float, np.ndarray]:
@@ -416,6 +415,7 @@ def optimize_fcidump(
     maxiter: int = 500,
     verbose: bool = False,
     cost: str = "NC",
+    pairs=None,
 ) -> scipy.optimize.OptimizeResult:
     """
     Load FCIDUMP, minimise cost(H(U), S, |psi(U)>), write rotated FCIDUMP.
@@ -443,13 +443,13 @@ def optimize_fcidump(
         sym_linops = list(symmetry_op)  # already LinearOperators
  
     if cost == "NC":
-        f = commutator_cost(moldata, sym_linops, state)
+        f = commutator_cost(moldata, sym_linops, state, pairs=pairs)
     elif cost == "variance":
-        f = variance_cost(moldata, sym_linops, state)
+        f = variance_cost(moldata, sym_linops, state, pairs=pairs)
     else:
         raise ValueError("cost must be 'NC' or 'variance'")
  
-    x0 = np.zeros(comb(norb, 2)) if x0 is None else x0
+    x0 = np.zeros(n_params(norb, pairs)) if x0 is None else x0
  
     if verbose:
         print(f"NC before: {f(x0):.6e}")
@@ -461,7 +461,7 @@ def optimize_fcidump(
         print(f"NC after:  {res.fun:.6e}  ({res.message})")
  
     if output_path is not None:
-        U_opt = x_to_rotation(res.x, norb)
+        U_opt = x_to_rotation(res.x, norb, pairs)
         rh    = moldata.hamiltonian.rotated(U_opt)
         ffsim.MolecularData(
             atom=moldata.atom, basis=moldata.basis, spin=moldata.spin, nelec=nelec,
@@ -479,6 +479,8 @@ if __name__=="__main__":
             "Orbital optimization of approximate symmetries. "
             "Use --reference to choose the cost wavefunction "
             "(fci/hf → ffsim CI costs; dmrg → Block2 MPS costs). "
+            "Use --orbital_rotation irrep for point-group-restricted "
+            "packing (needs a --point_group Hamiltonian). "
             "See --help epilog for examples."
         ),
     )
@@ -545,7 +547,11 @@ if __name__=="__main__":
         args.reference,
         cost_function=args.cost_function,
         bond_dim=args.bond_dim if args.reference == "dmrg" else None,
+        orbital_rotation=args.orbital_rotation,
     )
+
+    rotation_pairs = None
+    rotation_irreps = None
 
     # ── MPS-native path (--reference dmrg; NC / variance only) ────────────────
     if args.reference == "dmrg":
@@ -588,6 +594,17 @@ if __name__=="__main__":
             reuse=True,
             n_threads=args.n_threads,
         )
+        rotation_pairs, rotation_irreps = resolve_orbital_rotation(
+            args.orbital_rotation, args.molpath, solver.n_sites
+        )
+        costs.pairs = rotation_pairs
+        n_free = n_params(solver.n_sites, None)
+        n_sym = n_params(solver.n_sites, rotation_pairs)
+        print(
+            f"orbital_rotation={args.orbital_rotation}: "
+            f"N_free={n_free}, N_sym={n_sym}"
+            + (f", reduced={n_free - n_sym}" if rotation_pairs is not None else "")
+        )
         print("DMRG reference energy: {0:4.6f}".format(dmrg_result.energy))
         print("wavefunction store: {}".format(dmrg_result.store_dir))
 
@@ -595,7 +612,7 @@ if __name__=="__main__":
         x0 = (
             np.loadtxt(args.x0)
             if args.x0
-            else np.zeros(comb(solver.n_sites, 2))
+            else np.zeros(n_params(solver.n_sites, rotation_pairs))
         )
         cost_before = f(x0)
         print("before optimization: {0:4.6f}".format(cost_before))
@@ -624,7 +641,9 @@ if __name__=="__main__":
 
         if args.output_fcidump is not None:
             moldata = load_moldata(args.molpath)
-            rh = moldata.hamiltonian.rotated(x_to_rotation(res.x, moldata.norb))
+            rh = moldata.hamiltonian.rotated(
+                x_to_rotation(res.x, moldata.norb, rotation_pairs)
+            )
             ffsim.MolecularData(
                 atom=moldata.atom, basis=moldata.basis, spin=moldata.spin,
                 nelec=moldata.nelec, hf_energy=moldata.hf_energy,
@@ -655,7 +674,10 @@ if __name__=="__main__":
             "dmrg_energy": float(dmrg_result.energy),
             "wavefunction_dir": str(dmrg_result.store_dir),
             "rotation": res.x.tolist(),
+            "orbital_rotation": args.orbital_rotation,
         }
+        if rotation_irreps is not None:
+            out_data["irreps"] = np.asarray(rotation_irreps, dtype=int).tolist()
         with open(outname, "a") as fp:
             json.dump(vars(args) | out_data, fp, indent=2)
         print("results written to", outname)
@@ -670,6 +692,17 @@ if __name__=="__main__":
 
     moldata  = load_moldata(args.molpath)
     dumpdata = fcidump_data(args.molpath)
+
+    rotation_pairs, rotation_irreps = resolve_orbital_rotation(
+        args.orbital_rotation, args.molpath, moldata.norb
+    )
+    n_free = n_params(moldata.norb, None)
+    n_sym = n_params(moldata.norb, rotation_pairs)
+    print(
+        f"orbital_rotation={args.orbital_rotation}: "
+        f"N_free={n_free}, N_sym={n_sym}"
+        + (f", reduced={n_free - n_sym}" if rotation_pairs is not None else "")
+    )
 
     # ── symmetries ────────────────────────────────────────────────────────────
     symmetry_manifest = (
@@ -728,23 +761,27 @@ if __name__=="__main__":
     reference_fn = lambda md: state
 
     # ── cost before optimization ──────────────────────────────────────────────
-    x0 = np.loadtxt(args.x0) if args.x0 else np.zeros(comb(moldata.norb, 2))
+    x0 = (
+        np.loadtxt(args.x0)
+        if args.x0
+        else np.zeros(n_params(moldata.norb, rotation_pairs))
+    )
     switching_history = None
 
     if args.cost_function == "NC":
-        f = commutator_cost(moldata, sym_linops, state)
+        f = commutator_cost(moldata, sym_linops, state, pairs=rotation_pairs)
     elif args.cost_function == "variance":
-        f = variance_cost(moldata, sym_linops, state)
+        f = variance_cost(moldata, sym_linops, state, pairs=rotation_pairs)
     elif args.cost_function == "decoupled":
         if args.parity is None and symmetry_manifest is None:
             parser.error("decoupled cost requires a parity matrix")
         if args.sector_backend == "clifford":
             f, clifford_context = make_clifford_decoupled_energy_cost(
-                moldata, clifford_symmetries
+                moldata, clifford_symmetries, pairs=rotation_pairs
             )
         else:
             sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
-            f = make_decoupled_energy_cost(moldata, sectors)
+            f = make_decoupled_energy_cost(moldata, sectors, pairs=rotation_pairs)
     elif args.cost_function == "fixed_sector":
         if args.parity is None and symmetry_manifest is None:
             parser.error("fixed_sector cost requires a parity matrix")
@@ -754,19 +791,21 @@ if __name__=="__main__":
             )
             if args.fixed_sector is None:
                 initial_energy, sector_label, _ = scan_clifford_sector_energies(
-                    moldata, clifford_context, x0
+                    moldata, clifford_context, x0, pairs=rotation_pairs
                 )[0]
                 print("Selected initial fixed sector:", sector_label)
                 print("Initial fixed-sector energy: {0:4.12f}".format(initial_energy))
             else:
                 sector_label = parse_sector_label(args.fixed_sector)
             f = make_clifford_fixed_sector_energy_cost(
-                moldata, clifford_context, sector_label
+                moldata, clifford_context, sector_label, pairs=rotation_pairs
             )
         else:
             sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
             if args.fixed_sector is None:
-                initial_energy, sector_label, _ = best_sector(moldata, sectors, x0)
+                initial_energy, sector_label, _ = best_sector(
+                    moldata, sectors, x0, pairs=rotation_pairs
+                )
                 print("Selected initial fixed sector:", sector_label)
                 print("Initial fixed-sector energy: {0:4.12f}".format(initial_energy))
             else:
@@ -775,7 +814,9 @@ if __name__=="__main__":
                 raise ValueError(
                     f"sector {sector_label} is not present in this determinant space"
                 )
-            f = make_fixed_sector_energy_cost(moldata, sectors[sector_label])
+            f = make_fixed_sector_energy_cost(
+                moldata, sectors[sector_label], pairs=rotation_pairs
+            )
     elif args.cost_function == "switching_sector":
         if args.parity is None and symmetry_manifest is None:
             parser.error("switching_sector cost requires a parity matrix")
@@ -784,11 +825,13 @@ if __name__=="__main__":
                 clifford_symmetries, moldata.norb, moldata.nelec
             )
             initial_energy, initial_label, _ = scan_clifford_sector_energies(
-                moldata, clifford_context, x0
+                moldata, clifford_context, x0, pairs=rotation_pairs
             )[0]
         else:
             sectors = symmetry_sectors(parity_matrix, moldata.norb, moldata.nelec)
-            initial_energy, initial_label, _ = best_sector(moldata, sectors, x0)
+            initial_energy, initial_label, _ = best_sector(
+                moldata, sectors, x0, pairs=rotation_pairs
+            )
         print("Initial switching sector:", initial_label)
         f = None
     else:
@@ -811,6 +854,7 @@ if __name__=="__main__":
                 maxiter=args.optimizer_maxiter,
                 verbose=args.verbose,
                 cost=args.cost_function,
+                pairs=rotation_pairs,
             )
         elif args.cost_function == "switching_sector":
             if args.sector_backend == "clifford":
@@ -821,6 +865,7 @@ if __name__=="__main__":
                     maxiter=args.optimizer_maxiter,
                     max_switches=args.sector_switch_maxiter,
                     callback=callback if args.verbose else None,
+                    pairs=rotation_pairs,
                 )
             else:
                 res, switching_history = optimize_with_sector_switching(
@@ -830,6 +875,7 @@ if __name__=="__main__":
                     maxiter=args.optimizer_maxiter,
                     max_switches=args.sector_switch_maxiter,
                     callback=callback if args.verbose else None,
+                    pairs=rotation_pairs,
                 )
             for i, step in enumerate(switching_history):
                 print(
@@ -851,7 +897,7 @@ if __name__=="__main__":
             )
 
         if args.cost_function not in ("NC", "variance") and args.output_fcidump is not None:
-            U_opt = x_to_rotation(res.x, moldata.norb)
+            U_opt = x_to_rotation(res.x, moldata.norb, rotation_pairs)
             rh = moldata.hamiltonian.rotated(U_opt)
             ffsim.MolecularData(
                 atom=moldata.atom, basis=moldata.basis, spin=moldata.spin, nelec=moldata.nelec,
@@ -896,6 +942,9 @@ if __name__=="__main__":
     if switching_history is not None:
         out_data["switching_history"] = switching_history
     out_data["rotation"] = res.x.tolist()
+    out_data["orbital_rotation"] = args.orbital_rotation
+    if rotation_irreps is not None:
+        out_data["irreps"] = np.asarray(rotation_irreps, dtype=int).tolist()
 
     full_output = vars(args) | out_data
 
@@ -911,7 +960,7 @@ if __name__=="__main__":
         state_2d = np.asarray(state).real.reshape(
             comb(norb, nelec[0]), comb(norb, nelec[1])
         )
-        U_opt = x_to_rotation(res.x, norb)
+        U_opt = x_to_rotation(res.x, norb, rotation_pairs)
         rh    = moldata.hamiltonian.rotated(U_opt)
         rdm1a = fci_rdm.make_rdm1_spin1(
             fname='FCImake_rdm1a',

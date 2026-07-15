@@ -73,11 +73,13 @@ class DMRGOrbitalCosts:
         parity_matrix: np.ndarray,
         mps_tag: str = "GS",
         multiply: MultiplyConfig | None = None,
+        pairs=None,
     ) -> None:
         self.solver = solver
         self.parity_matrix = np.atleast_2d(np.asarray(parity_matrix, dtype=int))
         self.mps_tag = mps_tag
         self.multiply = multiply or MultiplyConfig()
+        self.pairs = pairs
         self._eval_count = 0
         self._tag_serial = 0
 
@@ -153,7 +155,7 @@ class DMRGOrbitalCosts:
     def variance(self, x: np.ndarray) -> float:
         """``sum_k (1 - |<ψ|U^dagger S_k U|ψ>|^2)``."""
         self._eval_count += 1
-        rotation = rotation_from_parameters(x, self.solver.n_sites)
+        rotation = rotation_from_parameters(x, self.solver.n_sites, self.pairs)
         total = 0.0
         for row in self.parity_matrix:
             phi = self._apply_symmetry(row, rotation, self.ket, "VPHI")
@@ -166,7 +168,7 @@ class DMRGOrbitalCosts:
         """``sum_k ||[H, U^dagger S_k U] |ψ>||^2``."""
         self._eval_count += 1
         self._ensure_eta()
-        rotation = rotation_from_parameters(x, self.solver.n_sites)
+        rotation = rotation_from_parameters(x, self.solver.n_sites, self.pairs)
         total = 0.0
         for row in self.parity_matrix:
             phi = self._apply_symmetry(row, rotation, self.ket, "CPHI")
@@ -202,6 +204,7 @@ def build_dmrg_orbital_costs(
     reuse: bool = True,
     rotation: np.ndarray | None = None,
     n_threads: int = 4,
+    pairs=None,
 ) -> tuple[DMRGOrbitalCosts, DMRGResult, Block2DMRGSolver]:
     """Solve (or reload) the reference MPS and wrap it as orbital costs.
 
@@ -244,5 +247,6 @@ def build_dmrg_orbital_costs(
         parity_matrix,
         mps_tag=result.mps_tag,
         multiply=multiply,
+        pairs=pairs,
     )
     return costs, result, solver

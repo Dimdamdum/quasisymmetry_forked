@@ -138,19 +138,19 @@ def _integral_fingerprint(h1e: np.ndarray, g2e: np.ndarray, ecore: float) -> str
     return digest.hexdigest()[:16]
 
 
-def rotation_from_parameters(x: np.ndarray, norb: int) -> np.ndarray:
+def rotation_from_parameters(
+    x: np.ndarray,
+    norb: int,
+    pairs=None,
+) -> np.ndarray:
     """Orbital rotation ``U = expm(A(x))`` from upper-triangle parameters.
 
-    Same parametrization as ``optimize_symmetries.x_to_rotation``, duplicated
-    here so DMRG stages can run without pyscf/ffsim installed.
+    Delegates to :func:`src.orbital_rotation.params_to_U`. Optional ``pairs``
+    restricts free angles to intra-irrep planes.
     """
-    import scipy.linalg
+    from src.orbital_rotation import params_to_U
 
-    upper = np.triu_indices(norb, k=1)
-    generator = np.zeros((norb, norb))
-    generator[upper] = np.asarray(x, dtype=float)
-    generator -= generator.T
-    return scipy.linalg.expm(generator)
+    return params_to_U(x, norb, pairs)
 
 
 def rotate_integrals(

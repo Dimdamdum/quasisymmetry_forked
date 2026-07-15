@@ -1,3 +1,10 @@
+"""Visualize quasisymmetry NC scores as a heatmap.
+
+Optional ``--U`` applies orbital-rotation parameters before computing local
+parities. Use ``--orbital_rotation irrep`` when those parameters came from an
+irrep-restricted optimization.
+"""
+
 import argparse
 import ffsim
 import numpy as np
@@ -8,6 +15,8 @@ from matplotlib.colors import LogNorm
 
 from optimize_symmetries import parities, get_fci, x_to_rotation
 from chemistry import load_moldata, fcidump_data
+from src.orbital_rotation import resolve_orbital_rotation
+from src.workflow_cli import add_orbital_rotation_arg
 
 
 
@@ -21,6 +30,7 @@ if __name__=="__main__":
         default="fci")
     parser.add_argument("--U", help="x as orbital rotation",
                         default=None)
+    add_orbital_rotation_arg(parser)
     args = parser.parse_args()
 
     moldata = load_moldata(args.molpath)
@@ -28,7 +38,10 @@ if __name__=="__main__":
 
     if args.U is not None:
         x = np.loadtxt(args.U)
-        U = x_to_rotation(x, moldata.norb)
+        pairs, _ = resolve_orbital_rotation(
+            args.orbital_rotation, args.molpath, moldata.norb
+        )
+        U = x_to_rotation(x, moldata.norb, pairs)
     else:
         U = np.eye(moldata.norb)
 

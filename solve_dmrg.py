@@ -5,6 +5,10 @@ The optimized MPS (and optional sector MPSs) are persisted under a store
 directory so later stages (``optimize_symmetries.py --reference dmrg``,
 ``metrics.py --backend dmrg``, notebooks) can reload them without re-solving.
 
+Optional ``--U`` applies orbital-rotation parameters before DMRG. Use
+``--orbital_rotation irrep`` when those parameters were optimized in
+irrep packing against a symmetry-adapted Hamiltonian.
+
 Examples
 --------
 Ground state from an FCIDUMP (works without pyscf)::
@@ -37,9 +41,9 @@ from src.dmrg_solver import (
     Block2DMRGSolver,
     DMRGConfig,
     rotate_integrals,
-    rotation_from_parameters,
     solve_or_load_ground_state,
 )
+from src.workflow_cli import add_orbital_rotation_arg
 
 
 def build_solver(args: argparse.Namespace) -> Block2DMRGSolver:
@@ -67,8 +71,13 @@ def build_solver(args: argparse.Namespace) -> Block2DMRGSolver:
 
     suffix = ""
     if args.U is not None:
+        from src.orbital_rotation import params_to_U, resolve_orbital_rotation
+
         x = np.loadtxt(args.U, comments=["#", "{"])
-        rotation = rotation_from_parameters(x, h1e.shape[0])
+        pairs, _ = resolve_orbital_rotation(
+            args.orbital_rotation, args.molpath, h1e.shape[0]
+        )
+        rotation = params_to_U(x, h1e.shape[0], pairs)
         h1e, g2e = rotate_integrals(h1e, g2e, rotation)
         x_hash = hashlib.sha256(np.ascontiguousarray(x).tobytes()).hexdigest()[:8]
         suffix = f"_rot-{x_hash}"
@@ -95,6 +104,7 @@ def main() -> None:
     parser.add_argument("--U", default=None,
                         help="path to orbital-rotation parameters x "
                              "(same format as metrics.py --U)")
+    add_orbital_rotation_arg(parser)
     parser.add_argument("--parity_matrix", default=None,
                         help="path to the incidence matrix of symmetries")
     parser.add_argument("--store_dir", default=None,

@@ -4,6 +4,11 @@
     Which wavefunction / cost engine to use
     (``fci`` / ``hf`` → CI costs; ``dmrg`` → Block2 MPS costs).
 
+``--orbital_rotation`` (optimize / rotate / ``--U`` tools)
+    ``full`` — all ``binom(n,2)`` planes (default).
+    ``irrep`` — only intra-irrep pairs; needs a symmetry-adapted
+    Hamiltonian from ``make_pyscf_hamiltonian.py --point_group``.
+
 ``--backend`` (metrics only)
     Sector eigensolver: ``fci``, ``davidson``, or ``dmrg``.
 
@@ -21,6 +26,7 @@ import argparse
 
 REFERENCE_CHOICES = ("fci", "hf", "dmrg")
 METRICS_BACKEND_CHOICES = ("fci", "dmrg", "davidson")
+ORBITAL_ROTATION_CHOICES = ("full", "irrep")
 
 OPTIMIZE_EPILOG = """
 --reference picks both the wavefunction and the cost engine
@@ -32,9 +38,15 @@ OPTIMIZE_EPILOG = """
   Sector energy costs (decoupled / fixed_sector / switching_sector)
   require --reference fci or hf (CI / ffsim path).
 
+--orbital_rotation packing
+--------------------------
+  --orbital_rotation full   SO(n), binom(n,2) angles (default)
+  --orbital_rotation irrep  intra-irrep pairs only (needs --point_group chk)
+
 examples
 --------
   python optimize_symmetries.py mol.FCIDUMP parity.txt
+  python optimize_symmetries.py mol.chk parity.txt --orbital_rotation irrep
   python optimize_symmetries.py mol.FCIDUMP parity.txt --reference hf
   python optimize_symmetries.py mol.FCIDUMP parity.txt --reference dmrg --bond_dim 250
 """
@@ -84,6 +96,21 @@ def add_dmrg_common_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_orbital_rotation_arg(parser: argparse.ArgumentParser) -> None:
+    """``--orbital_rotation {full,irrep}`` shared by optimize entry points."""
+    parser.add_argument(
+        "--orbital_rotation",
+        choices=ORBITAL_ROTATION_CHOICES,
+        default="full",
+        metavar="{full,irrep}",
+        help=(
+            "Orbital-rotation packing: full=SO(n) upper triangle (default); "
+            "irrep=only intra-irrep pairs (needs a symmetry-adapted Hamiltonian "
+            "from make_pyscf_hamiltonian.py --point_group)."
+        ),
+    )
+
+
 def add_optimize_workflow_args(parser: argparse.ArgumentParser) -> None:
     """``--reference`` for ``optimize_symmetries.py`` (no ``--backend``)."""
     parser.add_argument(
@@ -99,6 +126,7 @@ def add_optimize_workflow_args(parser: argparse.ArgumentParser) -> None:
             "Sector energy costs need fci or hf."
         ),
     )
+    add_orbital_rotation_arg(parser)
     add_dmrg_common_args(parser)
     _attach_epilog(parser, OPTIMIZE_EPILOG)
 
