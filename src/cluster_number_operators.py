@@ -3,6 +3,7 @@ Utilities for managing cluster number operators.
 - build_one_orb_num_operators and build_two_orb_num_operators: adapt optimize_symmetries.parities to numbers
 - number_matrix_to_operators: adapts optimize_symmetries.parity_matrix_to_quasisymmetries
 - number_and_parity_symmetry_sectors: builds sectors for given cluster number operators and cluster parity operators
+For usage examples, see notebooks cluster_numbers_and_parities.ipynb, cluster_numbers_scalable_search.ipynb, and test_cluster_number_operators.py
 """
 
 import numpy as np
@@ -153,3 +154,9 @@ def number_and_parity_symmetry_sectors(cluster_number_matrix, cluster_parity_mat
         sectors.setdefault(sector_label, []).append(i)
 
     return sectors
+
+################################################################
+# Function above are used in cluster_numbers_and_parities.ipynb,
+# functions below in cluster_numbers_scalable_search.ipynb
+################################################################
+
