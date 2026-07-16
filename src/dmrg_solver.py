@@ -30,6 +30,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import re
 import shutil
 import tempfile
 import time
@@ -279,6 +281,30 @@ def permute_integrals(
     return h1e_p, g2e_p
 
 
+def _fcidump_force_c1_orbsym(src: Path, dest: Path) -> None:
+    """Rewrite ORBSYM to all 1s so block2 ``pg='c1'`` accepts the dump.
+
+    Irrep labels for orbital packing should live in OO JSON when the SZ
+    solver always initializes under C1.
+    """
+    text = Path(src).read_text(encoding="utf-8", errors="replace")
+    norb_match = re.search(r"NORB\s*=\s*(\d+)", text, flags=re.IGNORECASE)
+    if norb_match is None:
+        raise ValueError(f"cannot parse NORB from {src}")
+    norb = int(norb_match.group(1))
+    orbsym_line = "ORBSYM=" + ",".join(["1"] * norb) + ","
+    new_text, n_sub = re.subn(
+        r"ORBSYM\s*=\s*[^\n]+",
+        orbsym_line,
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if n_sub != 1:
+        raise ValueError(f"cannot rewrite ORBSYM in {src}")
+    Path(dest).write_text(new_text, encoding="utf-8")
+
+
 class Block2DMRGSolver:
     """Fermionic (SZ-mode) block2 DMRG solver with local wavefunction storage.
 
@@ -333,6 +359,7 @@ class Block2DMRGSolver:
         self.n_threads = int(n_threads)
         self.driver = None
         self._hamiltonian_mpo = None
+        self._electronic_hamiltonian_mpo = None
         self._activate()
 
         if save_integrals:
@@ -386,6 +413,7 @@ class Block2DMRGSolver:
             n_sites=self.n_sites, n_elec=self.n_elec, spin=self.spin
         )
         self._hamiltonian_mpo = None
+        self._electronic_hamiltonian_mpo = None
         _ACTIVE_SOLVER = self
 
     # ------------------------------------------------------------------
@@ -402,12 +430,30 @@ class Block2DMRGSolver:
     ) -> "Block2DMRGSolver":
         """Build a solver directly from an FCIDUMP file (no pyscf needed)."""
         _require_pyblock2()
+        fcidump_path = Path(fcidump_path)
         tmp_scratch = tempfile.mkdtemp(prefix="block2_fcidump_read_")
+        tmp_dump = None
         try:
             reader = DMRGDriver(
                 scratch=tmp_scratch, symm_type=SymmetryTypes.SZ, n_threads=1
             )
-            reader.read_fcidump(str(fcidump_path), pg="c1", iprint=0)
+            try:
+                reader.read_fcidump(str(fcidump_path), pg="c1", iprint=0)
+            except RuntimeError as exc:
+                if "point group" not in str(exc).lower():
+                    raise
+                # Non-C1 ORBSYM (e.g. D2h labels) with pg='c1' → rewrite once.
+                fd, tmp_dump = tempfile.mkstemp(
+                    prefix="fcidump_c1_", suffix=".FCIDUMP"
+                )
+                os.close(fd)
+                _fcidump_force_c1_orbsym(fcidump_path, Path(tmp_dump))
+                logger.warning(
+                    "FCIDUMP ORBSYM incompatible with pg='c1'; "
+                    "rewrote all ORBSYM=1 for %s",
+                    fcidump_path,
+                )
+                reader.read_fcidump(tmp_dump, pg="c1", iprint=0)
             h1e = np.array(reader.h1e)
             g2e = np.array(reader.g2e)
             ecore = float(reader.ecore)
@@ -415,6 +461,8 @@ class Block2DMRGSolver:
             spin = int(reader.spin)
         finally:
             shutil.rmtree(tmp_scratch, ignore_errors=True)
+            if tmp_dump is not None:
+                Path(tmp_dump).unlink(missing_ok=True)
         return cls(
             h1e=h1e,
             g2e=g2e,
@@ -552,13 +600,29 @@ class Block2DMRGSolver:
     # ------------------------------------------------------------------
 
     def hamiltonian_mpo(self):
-        """The (cached) optimized quantum-chemistry MPO for ``H``."""
+        """Cached full Hamiltonian MPO (electronic + ``ecore`` constant).
+
+        Prefer :meth:`energy_expectation` for reported energies: some block2
+        builds drop MPO constants inside ``driver.expectation``, so
+        ``expectation(hamiltonian_mpo())`` alone can omit ``ecore``.
+        """
         self._activate()
         if self._hamiltonian_mpo is None:
-            self._hamiltonian_mpo = self.driver.get_qc_mpo(
-                h1e=self.h1e, g2e=self.g2e, ecore=self.ecore, iprint=0
+            self._hamiltonian_mpo = self.driver.get_mpo(
+                self._qc_expr_builder(include_ecore=True).finalize(),
+                iprint=0,
             )
         return self._hamiltonian_mpo
+
+    def electronic_hamiltonian_mpo(self):
+        """Cached electronic Hamiltonian MPO (no ``ecore`` constant)."""
+        self._activate()
+        if self._electronic_hamiltonian_mpo is None:
+            self._electronic_hamiltonian_mpo = self.driver.get_mpo(
+                self._qc_expr_builder(include_ecore=False).finalize(),
+                iprint=0,
+            )
+        return self._electronic_hamiltonian_mpo
 
     @staticmethod
     def _parity_factor_options(
@@ -839,12 +903,15 @@ class Block2DMRGSolver:
             gbb[(pair_b[:, :, None, None] ^ pair_b[None, None, :, :]) == 1] = 0.0
         return h1a, h1b, gaa, gab, gbb
 
-    def _qc_expr_builder(self, integrals=None):
+    def _qc_expr_builder(self, integrals=None, *, include_ecore: bool = True):
         """Expression builder pre-filled with an electronic Hamiltonian.
 
         ``integrals`` is an optional spin-resolved ``(h1a, h1b, gaa, gab,
         gbb)`` tuple in chemist notation; the stored spin-free integrals are
-        used when omitted.
+        used when omitted. When ``include_ecore`` is true the FCIDUMP constant
+        is added with ``add_const`` (useful for DMRG); reported energies must
+        still go through :meth:`energy_expectation`, which adds ``ecore`` in
+        Python so ``driver.expectation`` dropping constants cannot strip it.
         """
         if integrals is None:
             g2e_full = restore_g2e(self.g2e, self.n_sites)
@@ -861,7 +928,8 @@ class Block2DMRGSolver:
             ("ccdd", gaa), ("cCDd", gab), ("CcdD", gba), ("CCDD", gbb)
         ):
             builder.add_sum_term(expr, 0.5 * tensor.transpose(0, 2, 3, 1))
-        builder.add_const(self.ecore)
+        if include_ecore:
+            builder.add_const(self.ecore)
         return builder
 
     def sector_hamiltonian_mpo(
@@ -884,7 +952,11 @@ class Block2DMRGSolver:
             raise ValueError("sector_label length must match parity rows")
 
         self._activate()
-        builder = self._qc_expr_builder(self.decoupled_integrals(parity_matrix))
+        # Omit ecore here: the wavefunction is invariant to a constant shift,
+        # and reported sector energies always come from energy_expectation().
+        builder = self._qc_expr_builder(
+            self.decoupled_integrals(parity_matrix), include_ecore=False
+        )
         for row, bit in zip(parity_matrix, sector_label):
             sigma = -1.0 if bit else 1.0
             builder.add_const(penalty / 2)
@@ -927,9 +999,11 @@ class Block2DMRGSolver:
     def run_ground_state(self, config: DMRGConfig | None = None) -> DMRGResult:
         """Solve for the ground state and persist the MPS in the local store."""
         config = config or DMRGConfig()
-        energy, elapsed = self._run_dmrg(
-            self.hamiltonian_mpo(), config, config.mps_tag
+        # Solve on electronic H (constant shift does not change the MPS).
+        _, elapsed = self._run_dmrg(
+            self.electronic_hamiltonian_mpo(), config, config.mps_tag
         )
+        energy = self.energy_expectation(self.get_mps(config.mps_tag))
         result = DMRGResult(
             energy=energy,
             mps_tag=config.mps_tag,
@@ -968,7 +1042,7 @@ class Block2DMRGSolver:
             config = DMRGConfig(**{**asdict(config), "mps_tag": tag})
 
         mpo = self.sector_hamiltonian_mpo(parity_matrix, sector_label, penalty)
-        energy, elapsed = self._run_dmrg(mpo, config, tag)
+        _, elapsed = self._run_dmrg(mpo, config, tag)
 
         ket = self.get_mps(tag)
         expectations = self.symmetry_expectations(parity_matrix, ket=ket)
@@ -980,9 +1054,7 @@ class Block2DMRGSolver:
                 sector_label, expectations, targets, penalty,
             )
 
-        # Report the bare electronic energy in this state (penalty contribution
-        # vanishes on a clean sector; using <H> keeps the diagnostic meaningful
-        # even when the sector is only approximately selected).
+        # Report bare <H> (penalty vanishes on a clean sector).
         energy = self.energy_expectation(ket)
 
         result = DMRGResult(
@@ -1069,8 +1141,17 @@ class Block2DMRGSolver:
         return float(self.driver.expectation(bra, mpo, ket))
 
     def energy_expectation(self, ket=None) -> float:
-        """``<ket|H|ket>`` for a stored or supplied MPS."""
-        return self.expectation(self.hamiltonian_mpo(), ket=ket)
+        """``<ket|H_elec|ket> + ecore`` for a stored or supplied MPS.
+
+        ``ecore`` is added in Python. Relying on a constant term inside the
+        MPO is unsafe: some block2 builds drop constants in
+        ``driver.expectation`` (and/or raw ``driver.dmrg``), which made
+        ``E_FCI`` sit above ``E_decoupled`` by exactly ``|ecore|``.
+        """
+        return (
+            self.expectation(self.electronic_hamiltonian_mpo(), ket=ket)
+            + self.ecore
+        )
 
     def symmetry_expectations(
         self, parity_matrix: np.ndarray, ket=None
@@ -1244,16 +1325,19 @@ def solve_or_load_ground_state(
     config = config or DMRGConfig()
     if reuse and config.mps_tag in solver.stored_tags():
         run = solver.read_metadata(solver.store_dir)["runs"][config.mps_tag]
+        energy = float(
+            solver.energy_expectation(solver.get_mps(config.mps_tag))
+        )
         logger.info(
             "reusing stored wavefunction %s (E = %.10f)",
-            solver.store_dir, run["energy"],
+            solver.store_dir, energy,
         )
         stored_config = DMRGConfig(**{
             key: tuple(value) if isinstance(value, list) else value
             for key, value in run["config"].items()
         })
         return DMRGResult(
-            energy=float(run["energy"]),
+            energy=energy,
             mps_tag=config.mps_tag,
             store_dir=str(solver.store_dir),
             config=stored_config,
