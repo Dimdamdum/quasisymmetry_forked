@@ -7,9 +7,13 @@ import numpy as np
 import pytest
 import scipy
 import ffsim
-from src.cluster_number_operators import build_one_orb_num_operators, build_two_orb_num_operators, number_matrix_to_operators, from_num_operator_to_expnum_operator, number_and_parity_symmetry_sectors, integers_to_phases_polynomial
+from src.cluster_number_operators import build_one_orb_num_operators, build_two_orb_num_operators, number_matrix_to_operators, from_num_operator_to_expnum_operator, number_and_parity_symmetry_sectors, integers_to_phases_polynomial, get_cluster_indices
 from scipy.sparse.linalg import LinearOperator
 from src.sector_utils import symmetry_sectors
+import tempfile
+import shutil
+from src.dmrg_solver import Block2DMRGSolver
+from scipy.stats import unitary_group
 
 def test_spin_orbital_occupations():
     """Testing to refresh scipy/ffsim basis ordering and operator usage"""
@@ -151,3 +155,161 @@ def test_number_and_parity_symmetry_sectors():
                         ((1,), ()): [1,2,3,6],
                         ((2,), ()): [4,5,7,8]}
     assert sectors == expected_sectors
+
+def test_get_cluster_indices():
+    cluster_matrices = [
+        np.array([
+            [1, 0]
+        ]),
+        np.array([
+            [1, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 1, 1, 0],
+            [0, 0, 0, 1, 0, 0, 0]
+        ]),
+        np.array([
+            [0, 0, 0, 1, 1],
+            [0, 1, 0, 0, 1],
+            [0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+        ])
+    ]
+
+    clusters_list = [get_cluster_indices(cluster_matrix) for cluster_matrix in cluster_matrices]
+
+    expected_clusters_list = [
+        [[0],[1]],
+        [[0], [4,5], [3], [1,2,6]],
+        [[3, 4], [1, 4], [1], [], [0,2]]
+    ]
+
+    for i in range(len(clusters_list)):
+        clusters = clusters_list[i]
+        expected_clusters = expected_clusters_list[i]
+        assert len(clusters) == len(expected_clusters)
+        for j in range(len(clusters)):
+            assert np.all(clusters[j] == expected_clusters[j])
+
+# the following is a good reminder on how orbital rotations are implemented
+# both on fock space level, and on 1-, 2rdm level
+def test_rdm_rotations():
+    norb = 4
+    nelec = (2, 1)  # (Na, Nb)
+    dim = ffsim.dim(norb, nelec)
+
+    tmp_dir = tempfile.mkdtemp(prefix='block2_test_')
+
+    # dummy object to access, just to access solver.to_ci_vector
+    solver = Block2DMRGSolver(
+        h1e=np.zeros((4, 4)),
+        g2e=np.zeros((4, 4, 4, 4)),
+        ecore=0.0,
+        n_elec=(2,1),
+        spin=None,
+        store_dir=tmp_dir,
+        n_threads=1,
+        save_integrals=False
+    )
+
+    # random mps
+    mps = solver.driver.get_random_mps(tag='RAND', bond_dim=5, nroots=1)
+
+    # get full state
+    psi = solver.to_ci_vector(ket=mps)
+    # print(f"Length of psi: {len(psi)}, compare with dim = {dim}")
+
+    # Get RDMs
+    rdm1_a, rdm1_b = solver.driver.get_1pdm(mps)
+    rdm2_aa, rdm2_ab, rdm2_bb = solver.driver.get_2pdm(mps)
+    # Declared formulas in block2 software:
+    #
+    # rdm1_sigma[p, q] = <mps|a^dag_{p sigma}a_{q sigma}|mps>
+    #
+    # rdm2_aa[p, q, r, s] = <mps| a^dag_{p,alpha} a^dag_{q,alpha} a_{r,alpha} a_{s,alpha} |mps>   (alpha-alpha)
+    # rdm2_ab[p, q, r, s] = <mps| a^dag_{p,alpha} a^dag_{q,beta}  a_{r,beta}  a_{s,alpha} |mps>   (alpha-beta)
+    # rdm2_bb[p, q, r, s] = <mps| a^dag_{p,beta}  a^dag_{q,beta}  a_{r,beta}  a_{s,beta}  |mps>   (beta-beta)
+
+    # clean up
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # orbital rotations: identity, and a random unitary rotation 
+    Us = []
+    Us.append(np.eye(4))
+    for _ in range(2):
+        U = unitary_group.rvs(dim=norb)
+        Us.append(U)
+
+    # single-double excitation operators on Na, Nb-sector
+    cre_a, des_a = ffsim.cre_a, ffsim.des_a
+    cre_b, des_b = ffsim.cre_b, ffsim.des_b
+
+    op1_a = np.empty((norb, norb), dtype=object)
+    op1_b = np.empty((norb, norb), dtype=object)
+    for p in range(norb):
+        for q in range(norb):
+            op1_a[p, q] = ffsim.linear_operator(
+                ffsim.FermionOperator({(cre_a(p), des_a(q)): 1}), norb, nelec)
+            op1_b[p, q] = ffsim.linear_operator(
+                ffsim.FermionOperator({(cre_b(p), des_b(q)): 1}), norb, nelec)
+
+    op2_aa = np.empty((norb, norb, norb, norb), dtype=object)
+    op2_ab = np.empty((norb, norb, norb, norb), dtype=object)
+    op2_bb = np.empty((norb, norb, norb, norb), dtype=object)
+    for p in range(norb):
+        for q in range(norb):
+            for r in range(norb):
+                for s in range(norb):
+                    op2_aa[p, q, r, s] = ffsim.linear_operator(
+                        ffsim.FermionOperator({(cre_a(p), cre_a(q), des_a(r), des_a(s)): 1}), norb, nelec)
+                    op2_ab[p, q, r, s] = ffsim.linear_operator(
+                        ffsim.FermionOperator({(cre_a(p), cre_b(q), des_b(r), des_a(s)): 1}), norb, nelec)
+                    op2_bb[p, q, r, s] = ffsim.linear_operator(
+                        ffsim.FermionOperator({(cre_b(p), cre_b(q), des_b(r), des_b(s)): 1}), norb, nelec)
+
+    for U in Us:
+        U_conj = np.conj(U)
+        # PATH 1: efficient, orbital-space level way
+
+        # rotate 1rdm
+        rdm1_a_rotated = U_conj @ rdm1_a @ U.T
+        rdm1_b_rotated = U_conj @ rdm1_b @ U.T
+
+        # rotate 2rdm
+        rdm2_aa_rotated = np.einsum('pi,qj,rk,sl,ijkl->pqrs', U_conj, U_conj, U, U, rdm2_aa)
+        rdm2_ab_rotated = np.einsum('pi,qj,rk,sl,ijkl->pqrs', U_conj, U_conj, U, U, rdm2_ab)
+        rdm2_bb_rotated = np.einsum('pi,qj,rk,sl,ijkl->pqrs', U_conj, U_conj, U, U, rdm2_bb)
+
+        # PATH 2: inefficient, Fock-space level way
+
+        # rotated psi as we do in cost functions!
+        psi_rotated = ffsim.apply_orbital_rotation(psi, U, norb, nelec)
+
+        # manually compute the 1rdm and 2rdm of psi_rotated, using the precomputed operators
+        # use block2 conventions
+        rdm1_a_manual = np.array([[psi_rotated.conj() @ (op1_a[p, q] @ psi_rotated)
+                                    for q in range(norb)] for p in range(norb)])
+        rdm1_b_manual = np.array([[psi_rotated.conj() @ (op1_b[p, q] @ psi_rotated)
+                                    for q in range(norb)] for p in range(norb)])
+        rdm2_aa_manual = np.array([[[[psi_rotated.conj() @ (op2_aa[p, q, r, s] @ psi_rotated)
+                                    for s in range(norb)] for r in range(norb)]
+                                    for q in range(norb)] for p in range(norb)])
+        rdm2_ab_manual = np.array([[[[psi_rotated.conj() @ (op2_ab[p, q, r, s] @ psi_rotated)
+                                    for s in range(norb)] for r in range(norb)]
+                                    for q in range(norb)] for p in range(norb)])
+        rdm2_bb_manual = np.array([[[[psi_rotated.conj() @ (op2_bb[p, q, r, s] @ psi_rotated)
+                                    for s in range(norb)] for r in range(norb)]
+                                    for q in range(norb)] for p in range(norb)])
+
+        # COMPARE PATHS
+        # compare all 5 spin-resolved matrix elements and check equality within some tolerance
+        tol = 1e-14
+        tag = "identity" if np.allclose(U, np.eye(norb)) else "random"
+        checks = [
+            (rdm1_a_rotated, rdm1_a_manual),
+            (rdm1_b_rotated, rdm1_b_manual),
+            (rdm2_aa_rotated, rdm2_aa_manual),
+            (rdm2_ab_rotated, rdm2_ab_manual),
+            (rdm2_bb_rotated, rdm2_bb_manual),
+        ]
+        for (a, b) in checks:
+            diff = np.max(np.abs(a - b))
+            assert diff < tol

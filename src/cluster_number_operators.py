@@ -160,3 +160,13 @@ def number_and_parity_symmetry_sectors(cluster_number_matrix, cluster_parity_mat
 # functions below in cluster_numbers_scalable_search.ipynb
 ################################################################
 
+def get_cluster_indices(cluster_matrix):
+    """Convert the binary cluster_matrix into a list of orbital-index arrays,
+    one per cluster, adding back the "ghost" cluster of uncovered orbitals.
+    Precompute this once (it only depends on cluster_matrix, not on U)."""
+    covered = np.any(cluster_matrix, axis=0)
+    clusters = [np.where(row)[0] for row in cluster_matrix]
+    ghost = np.where(~covered)[0]
+    if ghost.size > 0:
+        clusters.append(ghost)
+    return clusters
