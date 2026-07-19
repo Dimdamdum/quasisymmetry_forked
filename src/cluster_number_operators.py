@@ -1,9 +1,9 @@
 """
-Utilities for managing cluster number operators.
-- build_one_orb_num_operators and build_two_orb_num_operators: adapt optimize_symmetries.parities to numbers
+Functions for managing cluster number operators.
+- build_one_orb_num_operators and build_two_orb_num_operators: adapts optimize_symmetries.parities to numbers
 - number_matrix_to_operators: adapts optimize_symmetries.parity_matrix_to_quasisymmetries
 - number_and_parity_symmetry_sectors: builds sectors for given cluster number operators and cluster parity operators
-For usage examples, see notebooks cluster_numbers_and_parities.ipynb, cluster_numbers_scalable_search.ipynb, and test_cluster_number_operators.py
+For usage examples, see notebooks cluster_numbers_and_parities.ipynb, cluster_numbers_search.ipynb, and test_cluster_number_operators.py
 """
 
 import numpy as np
@@ -160,13 +160,100 @@ def number_and_parity_symmetry_sectors(cluster_number_matrix, cluster_parity_mat
 # functions below in cluster_numbers_scalable_search.ipynb
 ################################################################
 
-def get_cluster_indices(cluster_matrix):
+def get_cluster_indices(cluster_matrix, norb):
     """Convert the binary cluster_matrix into a list of orbital-index arrays,
     one per cluster, adding back the "ghost" cluster of uncovered orbitals.
     Precompute this once (it only depends on cluster_matrix, not on U)."""
+    if cluster_matrix.size == 0: 
+        return [np.arange(norb)]
     covered = np.any(cluster_matrix, axis=0)
     clusters = [np.where(row)[0] for row in cluster_matrix]
     ghost = np.where(~covered)[0]
     if ghost.size > 0:
         clusters.append(ghost)
     return clusters
+
+def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([])) -> callable:
+    """
+    Constructs a local particle number expectation value evaluator for a given cluster configuration.
+    Only uses 1- and 2-rdm -> scales O(norb^5), with norb = number of orbitals.
+
+    Args:
+        D (ndarray): The spin-summed 1-reduced density matrix (1-RDM) of an underlying state psi.
+        Gamma (ndarray): The spin-summed 2-reduced density matrix (2-RDM) of psi.
+        cluster_matrix (ndarray): A binary matrix/list defining the orbital 
+            clusters. Defaults to `np.array([])`, which groups all orbitals together into a single cluster.
+
+    Returns:
+        callable: A function `loc_number_evaluator(U)` that takes:
+            - U (ndarray): A norb x norb orbital unitary matrix.
+            
+            And returns:
+            - couple (ndarray, ndarray): The expectation values of $n_p$ and $n_p n_q$ (for orbitals $p, q$ 
+            belonging to the same cluster) evaluated on the transformed state 
+            U^{otimes N} @ psi.
+    """
+    norb = D.shape[0]
+
+    # permute once: Gamma_tilde[k,n,l,m] = Gamma[k,l,m,n]
+    Gamma_tilde = Gamma.transpose(0, 3, 1, 2).reshape(norb * norb, norb * norb)
+
+    # Precomputed once: list of orbital-index arrays, one per cluster
+    # (including the ghost cluster of orbitals not covered by cluster_matrix).
+    clusters = get_cluster_indices(cluster_matrix, norb)
+
+    # For each cluster, precompute the (p, q) index pairs with p <= q
+    # (upper triangle, including diagonal), as absolute orbital indices.
+    # This is done once, not per-call.
+    cluster_pairs = []
+    for idx in clusters:
+        k = idx.size
+        tp, tq = np.triu_indices(k)  # local indices within this cluster
+        cluster_pairs.append((idx[tp], idx[tq]))  # absolute orbital indices
+    # cluster_pairs is a list of tuples, one tuple per cluster. Each tuple contains two arrays, P and Q: the first array contains the absolute orbital indices p for the upper triangle of the cluster, and the second array contains the corresponding absolute orbital indices q.
+
+    def loc_number_evaluator(U):
+        Uc = U.conj()
+
+        # n1(U)_p = sum_kl U*[p,k] U[p,l] D[k,l]   -- unrestricted, needed for all p
+        n1 = np.einsum('pk,pl,kl->p', Uc, U, D, optimize=True).real # discard machine precision imaginary parts in case of U complex
+
+        # Step 1: contract k -> new axis p  (matmul, O(norb^5)), all p needed
+        #   T[p, n, l, m] = sum_k U*[p,k] Gamma_tilde[k,n,l,m]
+        T = (Uc @ Gamma_tilde.reshape(norb, norb * norb * norb)).reshape(
+            norb, norb, norb, norb
+        )
+
+        # Step 2: contract n, batched over p  (O(norb^4)), all p needed
+        #   M[p, l, m] = sum_n T[p,n,l,m] U[p,n]
+        M = np.einsum('pnlm,pn->plm', T, U, optimize=True)
+
+        # Step 3 (restricted + symmetry-reduced): for each cluster, only
+        # compute N[p,q] for p, q both in that cluster, and only for p <= q
+        # (using N_pq = N_qp), then mirror. Zero outside clusters.
+        N = np.zeros((norb, norb), dtype=M.dtype)
+        for P, Q in cluster_pairs:
+            if P.size == 0:
+                continue
+            # Gather only the rows/entries needed for these p<=q pairs.
+            # M[P] reuses already-computed M (no recomputation), just indexing.
+            M_pairs = M[P]     # (npairs, norb, norb): M[p,:,:] for each pair
+            Uc_pairs = Uc[Q]   # (npairs, norb): U*[q,:] for each pair
+            U_pairs = U[Q]     # (npairs, norb): U[q,:] for each pair
+
+            # N_vals[n] = sum_lm M[p,l,m] * U*[q,l] * U[q,m]  for pair n=(p,q)
+            N_vals = np.einsum('nlm,nl,nm->n', M_pairs, Uc_pairs, U_pairs,
+                                optimize=True)
+
+            N[P, Q] = N_vals
+            N[Q, P] = N_vals
+            # for p == q this just overwrites the same (real) entry harmlessly
+
+        n2 = N.real + np.diag(n1) # discard machine precision imaginary parts in case of U complex
+        return n1, n2
+
+    return loc_number_evaluator
+
+#TODO def number_variance_cost(loc_number_evaluator, .....)
+
+#TODO def number_eval_eq_cost(loc_number_evaluator, .....)
