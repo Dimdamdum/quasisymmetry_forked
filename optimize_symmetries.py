@@ -124,7 +124,7 @@ def variance_cost_general(moldata: ffsim.MolecularData,
             if only_parities: # use simplified expression
                 total_var += 1 - ((rotated_state.T.conj() @ s @ rotated_state)**2).real
             else:
-                total_var += (reference_state.T.conj() @ (s @ (s @ reference_state)) - (reference_state.T.conj() @ (s @ reference_state)) ** 2).real
+                total_var += (rotated_state.T.conj() @ (s @ (s @ rotated_state)) - (rotated_state.T.conj() @ (s @ rotated_state)) ** 2).real
         return total_var
     return f
 
@@ -138,7 +138,7 @@ Key differences from variance-based cost function:
 maximize (minimize) <psi|U^dag S_i|psi> for evals_i = +1 (-1).
 """
 def eval_eq_cost(symmetries: list, evals: list,
-                    reference_state: np.ndarray, norb:int, nelec:int, only_parities=False) -> Callable:
+                    reference_state: np.ndarray, norb:int, nelec, only_parities=False) -> Callable:
     if len(symmetries) != len(evals):
         raise ValueError("len(evals) must match len(symmetries)")
     def f(x):

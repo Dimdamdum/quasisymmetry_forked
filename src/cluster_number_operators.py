@@ -13,6 +13,8 @@ from scipy.sparse.linalg import LinearOperator
 from math import comb
 from functools import cache
 from scipy.special import factorial
+from collections.abc import Callable
+from src.orbital_rotation import params_to_U
 
 @cache
 def build_one_orb_num_operators(norb, nelec):
@@ -160,20 +162,25 @@ def number_and_parity_symmetry_sectors(cluster_number_matrix, cluster_parity_mat
 # functions below in cluster_numbers_scalable_search.ipynb
 ################################################################
 
-def get_cluster_indices(cluster_matrix, norb):
+
+def get_cluster_indices(cluster_matrix, norb, with_ghost=True):
     """Convert the binary cluster_matrix into a list of orbital-index arrays,
-    one per cluster, adding back the "ghost" cluster of uncovered orbitals.
+    one per cluster, with default option to add back the "ghost" cluster of uncovered orbitals.
     Precompute this once (it only depends on cluster_matrix, not on U)."""
-    if cluster_matrix.size == 0: 
-        return [np.arange(norb)]
-    covered = np.any(cluster_matrix, axis=0)
+    if cluster_matrix.size == 0:
+        if with_ghost:
+            return [np.arange(norb)]
+        else:
+            return []
     clusters = [np.where(row)[0] for row in cluster_matrix]
-    ghost = np.where(~covered)[0]
-    if ghost.size > 0:
-        clusters.append(ghost)
+    if with_ghost:
+        covered = np.any(cluster_matrix, axis=0)
+        ghost = np.where(~covered)[0]
+        if ghost.size > 0:
+            clusters.append(ghost)
     return clusters
 
-def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([])) -> callable:
+def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([])) -> Callable:
     """
     Constructs a local particle number expectation value evaluator for a given cluster configuration.
     Only uses 1- and 2-rdm -> scales O(norb^5), with norb = number of orbitals.
@@ -185,7 +192,7 @@ def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([])) -> callabl
             clusters. Defaults to `np.array([])`, which groups all orbitals together into a single cluster.
 
     Returns:
-        callable: A function `loc_number_evaluator(U)` that takes:
+        Callable: A function `loc_number_evaluator(U)` that takes:
             - U (ndarray): A norb x norb orbital unitary matrix.
             
             And returns:
@@ -254,6 +261,68 @@ def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([])) -> callabl
 
     return loc_number_evaluator
 
-#TODO def number_variance_cost(loc_number_evaluator, .....)
+def number_variance_cost(D, Gamma, cluster_matrix) -> Callable:
+    """Compare with optimize_symmetries.variance_cost_general.
+    Cost function measuring summed variances of cluster number operators for orbital-rotated reference state.
+    Only uses 1- and 2-rdm -> scales O(norb^5), with norb = number of orbitals.
+        Args:
+            D (ndarray): The spin-summed 1-reduced density matrix (1-RDM) of an underlying state psi.
+            Gamma (ndarray): The spin-summed 2-reduced density matrix (2-RDM) of psi.
+            cluster_matrix (ndarray): A binary matrix/list defining the orbital clusters.
 
-#TODO def number_eval_eq_cost(loc_number_evaluator, .....)
+        Returns:
+            Callable: A function `f(x)` that takes:
+                - x (ndarray): 1D array parameters of upper-triangle of norb x norb antisymmetric matrix.
+                
+                And returns:
+                - Sum of variances of the number operators specified by cluster_matrix relative to the transformed state 
+                U^{otimes N} @ psi.
+    """
+    norb = D.shape[0]
+    loc_number_evaluator = build_loc_number_evaluator(D,Gamma,cluster_matrix=cluster_matrix)
+    cluster_indices = get_cluster_indices(cluster_matrix, norb)
+    def f(x: np.ndarray) -> float:
+        U = params_to_U(x, norb)
+
+        # efficiently get the one- and two-orbital number expectation values
+        # of ffsim.apply_orbital_rotation(reference_state, U, ...)
+        n1, n2 = loc_number_evaluator(U)
+        total_var = 0
+        for cluster in cluster_indices:
+            expected_n = np.sum(n1[cluster])
+            expected_n_squared = np.sum(n2[np.ix_(cluster, cluster)])
+            var = expected_n_squared - (expected_n ** 2)
+            total_var += var
+        return total_var
+    return f
+
+def number_eval_eq_cost(D, Gamma, cluster_matrix, evals: list) -> Callable:
+    """See optimize_symmetries.eval_eq_cost for the math idea. See number_variance_cost for usage.
+    """
+    if len(cluster_matrix) != len(evals):
+        raise ValueError("len(cluster_matrix) must match len(evals)")
+    norb = D.shape[0]
+    loc_number_evaluator = build_loc_number_evaluator(D,Gamma,cluster_matrix=cluster_matrix)
+    cluster_indices = get_cluster_indices(cluster_matrix, norb)
+    # complete with the eigenvalue for the ghost cluster number
+    num_elec = round(np.trace(D))
+    ghost_eval = round(num_elec - sum(evals))
+    evals_with_ghost = evals.copy()
+    evals_with_ghost.append(ghost_eval)
+
+    def f(x):
+        U = params_to_U(x, norb)
+
+        # efficiently get the one- and two-orbital number expectation values
+        # of ffsim.apply_orbital_rotation(reference_state, U, ...)
+        n1, n2 = loc_number_evaluator(U)
+        total_score = 0
+        for i in range(len(cluster_indices)):
+            cluster = cluster_indices[i]
+            eval = evals_with_ghost[i]
+            expected_n = np.sum(n1[cluster])
+            expected_n_squared = np.sum(n2[np.ix_(cluster, cluster)])
+            term = expected_n_squared - 2 * eval * expected_n + eval ** 2
+            total_score += term
+        return total_score
+    return f

@@ -7,13 +7,21 @@ import numpy as np
 import pytest
 import scipy
 import ffsim
-from src.cluster_number_operators import build_one_orb_num_operators, build_two_orb_num_operators, number_matrix_to_operators, from_num_operator_to_expnum_operator, number_and_parity_symmetry_sectors, integers_to_phases_polynomial, get_cluster_indices, build_loc_number_evaluator
 from scipy.sparse.linalg import LinearOperator
 from src.sector_utils import symmetry_sectors
 import tempfile
 import shutil
-from src.dmrg_solver import Block2DMRGSolver
 from scipy.stats import unitary_group
+from math import comb
+import pyscf
+
+from src.dmrg_solver import Block2DMRGSolver
+import optimize_symmetries
+optimize_symmetries.pyscf = pyscf # in case try-except import code in optimize_symmetries fails
+optimize_symmetries.ffsim = ffsim # in case try-except import code in optimize_symmetries fails
+from optimize_symmetries import variance_cost_general, eval_eq_cost
+
+from src.cluster_number_operators import build_one_orb_num_operators, build_two_orb_num_operators, number_matrix_to_operators, from_num_operator_to_expnum_operator, number_and_parity_symmetry_sectors, integers_to_phases_polynomial, get_cluster_indices, build_loc_number_evaluator, number_variance_cost, number_eval_eq_cost
 
 def test_spin_orbital_occupations():
     """Testing to refresh scipy/ffsim basis ordering and operator usage"""
@@ -195,6 +203,19 @@ def test_get_cluster_indices():
         for j in range(len(clusters)):
             assert np.all(clusters[j] == expected_clusters[j])
 
+    # without ghost
+    clusters_list_no_ghost = [get_cluster_indices(cluster_matrix, cluster_matrix.shape[1], with_ghost=False) for cluster_matrix in cluster_matrices]
+    clusters_list_no_ghost.append(get_cluster_indices(np.array([]), 5, with_ghost=False))
+
+    for i in range(len(clusters_list)):
+        clusters = clusters_list_no_ghost[i]
+        expected_clusters = expected_clusters_list[i].copy()
+        if i != 1: # for clusters == [[0, 1, 2, 3, 4]] i.e. cluster_matrices == np.array([[1, 1, 1, 1, 1]]), ghost and no ghost coincide 
+            expected_clusters.pop()
+        assert len(clusters) == len(expected_clusters)
+        for j in range(len(clusters)):
+            assert np.all(clusters[j] == expected_clusters[j])
+
 class TestRdmRotationsLocalNumbers:
     """Testing 1- and 2-rdm-related code."""
     norb = 4 # if this is modified, modify also downstream definition of cluster_matrices
@@ -220,7 +241,6 @@ class TestRdmRotationsLocalNumbers:
 
     # get full state
     psi = solver.to_ci_vector(ket=mps)
-    # print(f"Length of psi: {len(psi)}, compare with dim = {dim}")
 
     # Get RDMs
     rdm1_a, rdm1_b = solver.driver.get_1pdm(mps)
@@ -236,9 +256,9 @@ class TestRdmRotationsLocalNumbers:
     # clean up
     shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    # orbital rotations: identity, and a random unitary rotation 
+    # orbital rotations: identity, and random unitaries 
     Us = []
-    Us.append(np.eye(4))
+    Us.append(np.eye(norb))
     for _ in range(2):
         U = unitary_group.rvs(dim=norb)
         Us.append(U)
@@ -391,3 +411,89 @@ class TestRdmRotationsLocalNumbers:
                 for (a, b) in checks:
                     diff = np.max(np.abs(a - b))
                     assert diff < tol
+class TestNumberCostFunctions:
+    """Testing the two new cluster number-specific cost functions."""
+    norb = 6 # if this is modified, modify also downstream definition of cluster_matrix
+    nelec = (3, 2)  # (Na, Nb)
+    dim = ffsim.dim(norb, nelec)
+
+    tmp_dir = tempfile.mkdtemp(prefix='block2_test_')
+
+    # dummy object to access, just to access solver.to_ci_vector
+    solver = Block2DMRGSolver(
+        h1e=np.zeros((norb, norb)),
+        g2e=np.zeros((norb, norb, norb, norb)),
+        ecore=0.0,
+        n_elec=nelec,
+        spin=None,
+        store_dir=tmp_dir,
+        n_threads=1,
+        save_integrals=False
+    )
+
+    # random mps
+    mps = solver.driver.get_random_mps(tag='RAND', bond_dim=5, nroots=1)
+
+    # get full state
+    psi = solver.to_ci_vector(ket=mps)
+
+    # Get spin-summed RDMs D and Gamma
+    D = solver.driver.get_1pdm(mps)[0] + solver.driver.get_1pdm(mps)[1]
+    rdm2_aa, rdm2_ab, rdm2_bb = solver.driver.get_2pdm(mps)
+    Gamma = rdm2_aa + rdm2_bb + rdm2_ab + rdm2_ab.transpose(1, 0, 3, 2)
+
+    # Define clusters; the last 'ghost' cluster is added automatically by rdm path,
+    # but needs to be added manually in old path with operators
+    cluster_matrix = np.array([
+            [1, 0, 1, 0, 0, 0],
+            [0, 1, 0, 1, 1, 0]
+        ])
+
+    # get the full operators
+    number_operators = number_matrix_to_operators(cluster_matrix, norb, nelec)
+    ghost_number_op = number_matrix_to_operators(np.array([[0, 0, 0, 0, 0, 1]]), norb, nelec)[0]
+    number_operators.append(ghost_number_op)
+
+    # initiate dummy moldata of type ffsim.MolecularData, needed for old cost functions, should have norb and nelec as above
+    moldata = ffsim.MolecularData(
+        basis='sto-3g',
+        core_energy = 0.,
+        one_body_integrals = 0.,
+        two_body_integrals = 0.,
+        norb = norb,
+        nelec = nelec
+    )  
+    
+    def test_number_variance_cost(self):
+        # create random inputs for cost functions
+        number_tests = 10
+        length_x = comb(self.norb, 2)
+        xs = [np.random.rand(length_x) for _ in range(number_tests)]
+        variance_cost_rdm = number_variance_cost(self.D, self.Gamma, self.cluster_matrix)
+        variance_cost_ops = variance_cost_general(self.moldata, self.number_operators, self.psi)
+        for x in xs:
+            assert np.isclose(variance_cost_rdm(x), variance_cost_ops(x))
+
+    def test_number_eval_eq_cost(self):
+        # precompute guesse eigenvalues:
+        # PATH 1: with 1-rdm
+        evals_from_rdm = []
+        for cluster in get_cluster_indices(self.cluster_matrix, self.norb):
+            cluster_num_average = self.D[cluster, cluster].sum()
+            evals_from_rdm.append(round(cluster_num_average)) # best guess of eigenvalues
+        # PATH 2: with full state and operators
+        evals_from_state = [round(np.real(self.psi.T.conj() @ (op @ self.psi))) for op in self.number_operators] # best guess of eigenvalues
+        # check equality:
+        assert len(evals_from_rdm) == len(evals_from_state)
+        for i in range(len(evals_from_rdm)):
+            assert evals_from_rdm[i] == evals_from_state[i]
+        # for rdm path, we actually remove the ghost cluster:
+        evals_from_rdm.pop()
+        # create random inputs for cost functions
+        number_tests = 10
+        length_x = comb(self.norb, 2)
+        xs = [np.random.rand(length_x) for _ in range(number_tests)]
+        eval_eq_cost_rdm = number_eval_eq_cost(self.D, self.Gamma, self.cluster_matrix, evals_from_rdm)
+        eval_eq_cost_ops = eval_eq_cost(self.number_operators, evals_from_state, self.psi, self.norb, self.nelec)
+        for x in xs:
+            assert np.isclose(eval_eq_cost_rdm(x), eval_eq_cost_ops(x))
