@@ -14,14 +14,17 @@ import shutil
 from scipy.stats import unitary_group
 from math import comb
 import pyscf
+import jax
+import jax.numpy as jnp
 
 from src.dmrg_solver import Block2DMRGSolver
 import optimize_symmetries
 optimize_symmetries.pyscf = pyscf # in case try-except import code in optimize_symmetries fails
 optimize_symmetries.ffsim = ffsim # in case try-except import code in optimize_symmetries fails
 from optimize_symmetries import variance_cost_general, eval_eq_cost
+from src.orbital_rotation import params_to_U
 
-from src.cluster_number_operators import build_one_orb_num_operators, build_two_orb_num_operators, number_matrix_to_operators, from_num_operator_to_expnum_operator, number_and_parity_symmetry_sectors, integers_to_phases_polynomial, get_cluster_indices, build_loc_number_evaluator, number_variance_cost, number_eval_eq_cost
+from src.cluster_number_operators import build_one_orb_num_operators, build_two_orb_num_operators, number_matrix_to_operators, from_num_operator_to_expnum_operator, number_and_parity_symmetry_sectors, integers_to_phases_polynomial, get_cluster_indices, build_loc_number_evaluator, number_variance_cost, number_eval_eq_cost, params_to_U_jax
 
 def test_spin_orbital_occupations():
     """Testing to refresh scipy/ffsim basis ordering and operator usage"""
@@ -216,6 +219,63 @@ def test_get_cluster_indices():
         for j in range(len(clusters)):
             assert np.all(clusters[j] == expected_clusters[j])
 
+
+"""
+# old code for checking we understand 1rdm and 2rdm - energy cross check
+
+#   E_1 = sum_pq h1e_pq (rdm1_a_pq + rdm1_b_pq)
+#
+#   E_2 = 1/2 sum_pqrs g2e_full[p,s,q,r] * rdm2_aa[p,q,r,s]
+#       +     sum_pqrs g2e_full[p,s,q,r] * rdm2_ab[p,q,r,s]
+#       + 1/2 sum_pqrs g2e_full[p,s,q,r] * rdm2_bb[p,q,r,s]
+#   last line accounts for ab and ba; reason is rdm2_ba[p, q, r, s] = rdm2_ab[q, p, s, r]
+#   and g2e_full[p, q, r, s] = g2e_full[r, s, p, q] for particle exchange symmetry of coulomb =
+#   (...also = 6 more mat el.s for real orbitals! "8-fold permutational symmetry").
+#   And these two things are independent of orbitals being real! (Worth a double check if ever needed.)
+#
+#   E_elec = E_1 + E_2
+#   E_total = E_elec + ecore
+
+g2e_full = pyscf.ao2mo.restore(1, g2e, norb) # not compressed; chemist's notatio
+
+# One-body: direct contraction, no index permutation needed
+e1 = np.einsum('pq,pq->', h1e, rdm1_a) + np.einsum('pq,pq->', h1e, rdm1_b)
+
+# Two-body: 'psqr,pqrs->' index permutation needed - human checked!
+e2 = (
+    0.5 * np.einsum('psqr,pqrs->', g2e_full, rdm2_aa)      # alpha-alpha
+    + np.einsum('psqr,pqrs->', g2e_full, rdm2_ab)          # alpha-beta + beta-alpha
+    + 0.5 * np.einsum('psqr,pqrs->', g2e_full, rdm2_bb)    # beta-beta
+)
+
+e_check = e1 + e2 + ecore
+
+print(f"Energy from RDMs - energy from DMRG: {(e_check - result.energy):.2e} Ha")
+"""
+
+def test_params_to_U_jax():
+    norb = 4
+    n_params = norb * (norb - 1) // 2
+    
+    # Generate random test parameters
+    np.random.seed(42)
+    x_np = np.random.randn(n_params) * 0.1
+    x_jax = jnp.array(x_np)
+
+    # Evaluate both functions
+    U_np = params_to_U(x_np, norb)
+    U_jax = np.array(params_to_U_jax(x_jax, norb)) # Convert JAX array back to NumPy for comparison
+
+    # Check absolute difference
+    max_diff = np.max(np.abs(U_np - U_jax))
+
+    # Verify unitarity (U^dagger * U = I)
+    unitarity_np = np.allclose(U_np.conj().T @ U_np, np.eye(norb), atol=1e-12)
+    unitarity_jax = np.allclose(U_jax.conj().T @ U_jax, np.eye(norb), atol=1e-12)
+
+    assert max_diff < 1e-10, "Mismatch detected between NumPy and JAX parameter mappings!"
+    assert unitarity_np and unitarity_jax, "Generated matrices are not unitary!"
+
 class TestRdmRotationsLocalNumbers:
     """Testing 1- and 2-rdm-related code."""
     norb = 4 # if this is modified, modify also downstream definition of cluster_matrices
@@ -409,7 +469,7 @@ class TestRdmRotationsLocalNumbers:
                     (n2_eff, n2_manual)
                 ]
                 for (a, b) in checks:
-                    diff = np.max(np.abs(a - b))
+                    diff = np.max(np.abs(np.array(a) - b))
                     assert diff < tol
 class TestNumberCostFunctions:
     """Testing the two new cluster number-specific cost functions."""
@@ -472,7 +532,7 @@ class TestNumberCostFunctions:
         variance_cost_rdm = number_variance_cost(self.D, self.Gamma, self.cluster_matrix)
         variance_cost_ops = variance_cost_general(self.moldata, self.number_operators, self.psi)
         for x in xs:
-            assert np.isclose(variance_cost_rdm(x), variance_cost_ops(x))
+            assert np.isclose(variance_cost_rdm(x), variance_cost_ops(x), atol = 1.e-10)
 
     def test_number_eval_eq_cost(self):
         # precompute guesse eigenvalues:

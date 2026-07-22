@@ -15,6 +15,12 @@ from functools import cache
 from scipy.special import factorial
 from collections.abc import Callable
 from src.orbital_rotation import params_to_U
+import jax
+import jax.numpy as jnp
+from scipy.optimize import minimize
+
+# Ensure JAX uses float64 for high-precision optimization
+jax.config.update("jax_enable_x64", True)
 
 @cache
 def build_one_orb_num_operators(norb, nelec):
@@ -223,7 +229,7 @@ def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([])) -> Callabl
         Uc = U.conj()
 
         # n1(U)_p = sum_kl U*[p,k] U[p,l] D[k,l]   -- unrestricted, needed for all p
-        n1 = np.einsum('pk,pl,kl->p', Uc, U, D, optimize=True).real # discard machine precision imaginary parts in case of U complex
+        n1 = jnp.einsum('pk,pl,kl->p', Uc, U, D, optimize=True).real # discard machine precision imaginary parts in case of U complex
 
         # Step 1: contract k -> new axis p  (matmul, O(norb^5)), all p needed
         #   T[p, n, l, m] = sum_k U*[p,k] Gamma_tilde[k,n,l,m]
@@ -233,12 +239,12 @@ def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([])) -> Callabl
 
         # Step 2: contract n, batched over p  (O(norb^4)), all p needed
         #   M[p, l, m] = sum_n T[p,n,l,m] U[p,n]
-        M = np.einsum('pnlm,pn->plm', T, U, optimize=True)
+        M = jnp.einsum('pnlm,pn->plm', T, U, optimize=True)
 
         # Step 3 (restricted + symmetry-reduced): for each cluster, only
         # compute N[p,q] for p, q both in that cluster, and only for p <= q
         # (using N_pq = N_qp), then mirror. Zero outside clusters.
-        N = np.zeros((norb, norb), dtype=M.dtype)
+        N = jnp.zeros((norb, norb), dtype=M.dtype)
         for P, Q in cluster_pairs:
             if P.size == 0:
                 continue
@@ -249,19 +255,32 @@ def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([])) -> Callabl
             U_pairs = U[Q]     # (npairs, norb): U[q,:] for each pair
 
             # N_vals[n] = sum_lm M[p,l,m] * U*[q,l] * U[q,m]  for pair n=(p,q)
-            N_vals = np.einsum('nlm,nl,nm->n', M_pairs, Uc_pairs, U_pairs,
+            N_vals = jnp.einsum('nlm,nl,nm->n', M_pairs, Uc_pairs, U_pairs,
                                 optimize=True)
 
-            N[P, Q] = N_vals
-            N[Q, P] = N_vals
+            N = N.at[P, Q].set(N_vals)
+            N = N.at[Q, P].set(N_vals)
             # for p == q this just overwrites the same (real) entry harmlessly
 
-        n2 = N.real + np.diag(n1) # discard machine precision imaginary parts in case of U complex
+        n2 = N.real + jnp.diag(n1) # discard machine precision imaginary parts in case of U complex
         return n1, n2
 
     return loc_number_evaluator
 
-def number_variance_cost(D, Gamma, cluster_matrix) -> Callable:
+
+
+def params_to_U_jax(x, norb):
+    """Convert parameters x to an orthogonal/unitary matrix U."""
+    # Build upper triangle skew-symmetric matrix A
+    A = jnp.zeros((norb, norb))
+    triu_indices = jnp.triu_indices(norb, k=1)
+    A = A.at[triu_indices].set(x)
+    A = A - A.T  # Antisymmetric matrix
+    
+    # Exponentiate to get the unitary/orthogonal rotation matrix U
+    return jax.scipy.linalg.expm(A)
+
+def number_variance_cost(D, Gamma, cluster_matrix, with_ghost=True) -> Callable:
     """Compare with optimize_symmetries.variance_cost_general.
     Cost function measuring summed variances of cluster number operators for orbital-rotated reference state.
     Only uses 1- and 2-rdm -> scales O(norb^5), with norb = number of orbitals.
@@ -279,18 +298,24 @@ def number_variance_cost(D, Gamma, cluster_matrix) -> Callable:
                 U^{otimes N} @ psi.
     """
     norb = D.shape[0]
-    loc_number_evaluator = build_loc_number_evaluator(D,Gamma,cluster_matrix=cluster_matrix)
-    cluster_indices = get_cluster_indices(cluster_matrix, norb)
+
+    # convert input to JAX
+    D_jax = jnp.array(D)
+    Gamma_jax = jnp.array(Gamma)
+
+    loc_number_evaluator = build_loc_number_evaluator(D_jax, Gamma_jax,cluster_matrix=cluster_matrix)
+    cluster_indices = get_cluster_indices(cluster_matrix, norb, with_ghost=with_ghost)
     def f(x: np.ndarray) -> float:
-        U = params_to_U(x, norb)
+        U = params_to_U_jax(x, norb)
 
         # efficiently get the one- and two-orbital number expectation values
         # of ffsim.apply_orbital_rotation(reference_state, U, ...)
         n1, n2 = loc_number_evaluator(U)
-        total_var = 0
+        total_var = 0.
+    
         for cluster in cluster_indices:
-            expected_n = np.sum(n1[cluster])
-            expected_n_squared = np.sum(n2[np.ix_(cluster, cluster)])
+            expected_n = jnp.sum(n1[cluster])
+            expected_n_squared = jnp.sum(n2[jnp.ix_(cluster, cluster)])
             var = expected_n_squared - (expected_n ** 2)
             total_var += var
         return total_var
@@ -302,8 +327,14 @@ def number_eval_eq_cost(D, Gamma, cluster_matrix, evals: list) -> Callable:
     if len(cluster_matrix) != len(evals):
         raise ValueError("len(cluster_matrix) must match len(evals)")
     norb = D.shape[0]
-    loc_number_evaluator = build_loc_number_evaluator(D,Gamma,cluster_matrix=cluster_matrix)
+    
+    # convert input to JAX
+    D_jax = jnp.array(D)
+    Gamma_jax = jnp.array(Gamma)
+
+    loc_number_evaluator = build_loc_number_evaluator(D_jax, Gamma_jax,cluster_matrix=cluster_matrix)
     cluster_indices = get_cluster_indices(cluster_matrix, norb)
+    
     # complete with the eigenvalue for the ghost cluster number
     num_elec = round(np.trace(D))
     ghost_eval = round(num_elec - sum(evals))
@@ -311,7 +342,7 @@ def number_eval_eq_cost(D, Gamma, cluster_matrix, evals: list) -> Callable:
     evals_with_ghost.append(ghost_eval)
 
     def f(x):
-        U = params_to_U(x, norb)
+        U = params_to_U_jax(x, norb)
 
         # efficiently get the one- and two-orbital number expectation values
         # of ffsim.apply_orbital_rotation(reference_state, U, ...)
@@ -320,8 +351,8 @@ def number_eval_eq_cost(D, Gamma, cluster_matrix, evals: list) -> Callable:
         for i in range(len(cluster_indices)):
             cluster = cluster_indices[i]
             eval = evals_with_ghost[i]
-            expected_n = np.sum(n1[cluster])
-            expected_n_squared = np.sum(n2[np.ix_(cluster, cluster)])
+            expected_n = jnp.sum(n1[cluster])
+            expected_n_squared = jnp.sum(n2[jnp.ix_(cluster, cluster)])
             term = expected_n_squared - 2 * eval * expected_n + eval ** 2
             total_score += term
         return total_score
