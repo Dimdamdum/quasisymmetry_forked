@@ -169,7 +169,7 @@ def number_and_parity_symmetry_sectors(cluster_number_matrix, cluster_parity_mat
 ################################################################
 
 
-def get_cluster_indices(cluster_matrix, norb, with_ghost=True):
+def get_cluster_indices(cluster_matrix, norb, with_ghost=False):
     """Convert the binary cluster_matrix into a list of orbital-index arrays,
     one per cluster, with default option to add back the "ghost" cluster of uncovered orbitals.
     Precompute this once (it only depends on cluster_matrix, not on U)."""
@@ -186,7 +186,7 @@ def get_cluster_indices(cluster_matrix, norb, with_ghost=True):
             clusters.append(ghost)
     return clusters
 
-def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([])) -> Callable:
+def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([]), with_ghost=False) -> Callable:
     """
     Constructs a local particle number expectation value evaluator for a given cluster configuration.
     Only uses 1- and 2-rdm -> scales O(norb^5), with norb = number of orbitals.
@@ -196,6 +196,7 @@ def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([])) -> Callabl
         Gamma (ndarray): The spin-summed 2-reduced density matrix (2-RDM) of psi.
         cluster_matrix (ndarray): A binary matrix/list defining the orbital 
             clusters. Defaults to `np.array([])`, which groups all orbitals together into a single cluster.
+        with_ghost (bool): set to True to add a clusters with all orbitals that are not in cluster_matrix. Defaults to False.
 
     Returns:
         Callable: A function `loc_number_evaluator(U)` that takes:
@@ -212,8 +213,8 @@ def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([])) -> Callabl
     Gamma_tilde = Gamma.transpose(0, 3, 1, 2).reshape(norb * norb, norb * norb)
 
     # Precomputed once: list of orbital-index arrays, one per cluster
-    # (including the ghost cluster of orbitals not covered by cluster_matrix).
-    clusters = get_cluster_indices(cluster_matrix, norb)
+    # (possibly including the ghost cluster of orbitals not covered by cluster_matrix).
+    clusters = get_cluster_indices(cluster_matrix, norb, with_ghost=with_ghost)
 
     # For each cluster, precompute the (p, q) index pairs with p <= q
     # (upper triangle, including diagonal), as absolute orbital indices.
@@ -280,7 +281,7 @@ def params_to_U_jax(x, norb):
     # Exponentiate to get the unitary/orthogonal rotation matrix U
     return jax.scipy.linalg.expm(A)
 
-def number_variance_cost(D, Gamma, cluster_matrix, with_ghost=True) -> Callable:
+def number_variance_cost(D, Gamma, cluster_matrix, with_ghost=False, var_exponent=1) -> Callable:
     """Compare with optimize_symmetries.variance_cost_general.
     Cost function measuring summed variances of cluster number operators for orbital-rotated reference state.
     Only uses 1- and 2-rdm -> scales O(norb^5), with norb = number of orbitals.
@@ -288,13 +289,14 @@ def number_variance_cost(D, Gamma, cluster_matrix, with_ghost=True) -> Callable:
             D (ndarray): The spin-summed 1-reduced density matrix (1-RDM) of an underlying state psi.
             Gamma (ndarray): The spin-summed 2-reduced density matrix (2-RDM) of psi.
             cluster_matrix (ndarray): A binary matrix/list defining the orbital clusters.
-
+            with_ghost (bool): set to True to add a cluster with all orbitals that are not in cluster_matrix. Defaults to False.
+            var_exponent (float): exponent to be put on the variances before summing them. Defaults to 1 (pure variances).
         Returns:
             Callable: A function `f(x)` that takes:
                 - x (ndarray): 1D array parameters of upper-triangle of norb x norb antisymmetric matrix.
                 
                 And returns:
-                - Sum of variances of the number operators specified by cluster_matrix relative to the transformed state 
+                - Sum of variances ** var_exponent of the number operators specified by cluster_matrix relative to the transformed state 
                 U^{otimes N} @ psi.
     """
     norb = D.shape[0]
@@ -303,7 +305,7 @@ def number_variance_cost(D, Gamma, cluster_matrix, with_ghost=True) -> Callable:
     D_jax = jnp.array(D)
     Gamma_jax = jnp.array(Gamma)
 
-    loc_number_evaluator = build_loc_number_evaluator(D_jax, Gamma_jax,cluster_matrix=cluster_matrix)
+    loc_number_evaluator = build_loc_number_evaluator(D_jax, Gamma_jax,cluster_matrix=cluster_matrix, with_ghost=with_ghost)
     cluster_indices = get_cluster_indices(cluster_matrix, norb, with_ghost=with_ghost)
     def f(x: np.ndarray) -> float:
         U = params_to_U_jax(x, norb)
@@ -317,11 +319,14 @@ def number_variance_cost(D, Gamma, cluster_matrix, with_ghost=True) -> Callable:
             expected_n = jnp.sum(n1[cluster])
             expected_n_squared = jnp.sum(n2[jnp.ix_(cluster, cluster)])
             var = expected_n_squared - (expected_n ** 2)
-            total_var += var
+            if var_exponent != 1:
+                total_var += var ** var_exponent
+            else:
+                total_var += var
         return total_var
     return f
 
-def number_eval_eq_cost(D, Gamma, cluster_matrix, evals: list) -> Callable:
+def number_eval_eq_cost(D, Gamma, cluster_matrix, evals: list, with_ghost=False) -> Callable:
     """See optimize_symmetries.eval_eq_cost for the math idea. See number_variance_cost for usage.
     """
     if len(cluster_matrix) != len(evals):
@@ -332,14 +337,18 @@ def number_eval_eq_cost(D, Gamma, cluster_matrix, evals: list) -> Callable:
     D_jax = jnp.array(D)
     Gamma_jax = jnp.array(Gamma)
 
-    loc_number_evaluator = build_loc_number_evaluator(D_jax, Gamma_jax,cluster_matrix=cluster_matrix)
-    cluster_indices = get_cluster_indices(cluster_matrix, norb)
-    
-    # complete with the eigenvalue for the ghost cluster number
-    num_elec = round(np.trace(D))
-    ghost_eval = round(num_elec - sum(evals))
-    evals_with_ghost = evals.copy()
-    evals_with_ghost.append(ghost_eval)
+    loc_number_evaluator = build_loc_number_evaluator(D_jax, Gamma_jax,cluster_matrix=cluster_matrix, with_ghost=with_ghost)
+    cluster_indices = get_cluster_indices(cluster_matrix, norb, with_ghost=with_ghost)
+    evals_processed = evals.copy()
+
+    if with_ghost:
+        covered = np.any(cluster_matrix, axis=0)
+        ghost = np.where(~covered)[0]
+        if ghost.size > 0:
+        # complete with the eigenvalue for the ghost cluster number
+            num_elec = round(np.trace(D))
+            ghost_eval = round(num_elec - sum(evals))
+            evals_processed.append(ghost_eval)
 
     def f(x):
         U = params_to_U_jax(x, norb)
@@ -350,10 +359,35 @@ def number_eval_eq_cost(D, Gamma, cluster_matrix, evals: list) -> Callable:
         total_score = 0
         for i in range(len(cluster_indices)):
             cluster = cluster_indices[i]
-            eval = evals_with_ghost[i]
+            eval = evals_processed[i]
             expected_n = jnp.sum(n1[cluster])
             expected_n_squared = jnp.sum(n2[jnp.ix_(cluster, cluster)])
             term = expected_n_squared - 2 * eval * expected_n + eval ** 2
             total_score += term
         return total_score
+    return f
+
+def extremality_cost(D, cluster_matrix, with_ghost=False) -> Callable:
+    norb = D.shape[0]
+
+    # convert input to JAX
+    D_jax = jnp.array(D)
+
+    cluster_indices = get_cluster_indices(cluster_matrix, norb, with_ghost=with_ghost)
+
+    def f(x: np.ndarray) -> float:
+
+        U = params_to_U_jax(x, norb)
+        Uc = U.conj()
+    
+        # n1(U)_p = sum_kl U*[p,k] U[p,l] D[k,l]   -- unrestricted, needed for all p
+        n1 = jnp.einsum('pk,pl,kl->p', Uc, U, D, optimize=True).real # discard machine precision imaginary parts in case of U complex
+
+        total_cost = 0.
+        
+        for cluster in cluster_indices:
+            cluster_size = len(cluster)
+            expected_n = jnp.sum(n1[cluster])
+            total_cost += expected_n * (2 * cluster_size - expected_n)
+        return total_cost
     return f
