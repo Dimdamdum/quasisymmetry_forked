@@ -246,6 +246,10 @@ def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([]), with_ghost
         # compute N[p,q] for p, q both in that cluster, and only for p <= q
         # (using N_pq = N_qp), then mirror. Zero outside clusters.
         N = jnp.zeros((norb, norb), dtype=M.dtype)
+
+        if not with_ghost:
+            nonzero_cols = jnp.array((cluster_matrix != 0).any(axis=0).astype(int))
+
         for P, Q in cluster_pairs:
             if P.size == 0:
                 continue
@@ -263,8 +267,12 @@ def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([]), with_ghost
             N = N.at[Q, P].set(N_vals)
             # for p == q this just overwrites the same (real) entry harmlessly
 
-        n2 = N.real + jnp.diag(n1) # discard machine precision imaginary parts in case of U complex
-        return n1, n2
+        if with_ghost:
+            n2 = N.real + jnp.diag(n1) # discard machine precision imaginary parts in case of U complex
+        else:
+            n2 = N.real + nonzero_cols * jnp.diag(n1)
+        
+        return n1, n2 # still returning full diagonal n1 even if not with_ghost - it is cheap
 
     return loc_number_evaluator
 
@@ -367,7 +375,7 @@ def number_eval_eq_cost(D, Gamma, cluster_matrix, evals: list, with_ghost=False)
         return total_score
     return f
 
-def extremality_cost(D, cluster_matrix, with_ghost=False) -> Callable:
+def extremality_cost(D, cluster_matrix, with_ghost=False) -> Callable: # only needs 1rdm D
     norb = D.shape[0]
 
     # convert input to JAX

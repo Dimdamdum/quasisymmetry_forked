@@ -1,15 +1,70 @@
+from __future__ import annotations
+
+# This file is piecewise AI-written and human-verified
+
 """
 Cluster Numbers Metrics Script
 
 This script performs DMRG calculations, extracts RDMs, optimizes orbital bases,
 and analyzes symmetry sectors to evaluate the quality of cluster decompositions.
+See notebook cluster_numbers_search (same implementation, clearer structure).
 
 Usage:
     python cluster_numbers_metrics.py h4_square 6-31g 1.0 --max-transfers 2
     python cluster_numbers_metrics.py h2o 6-31g 1.0 --bond-angle 104.5 --max-transfers 2
 """
 
-from __future__ import annotations
+""""
+Detail usage guide
+
+# Run a standard analysis
+python cluster_numbers_metrics.py h4_square 6-31g 1.0
+
+# With custom parameters
+python cluster_numbers_metrics.py h2o 6-31g 1.0 --bond-angle 104.5 --max-transfers 2
+
+# python cluster_numbers_metrics.py h4_square 6-31g 1.0 --cluster-matrix '[[1,0,0,0,0,0,0,1],[0,0,1,0,1,0,0,0],[0,1,0,1,0,0,0,0]]'   
+
+# Skip orbital optimization for faster runs
+python cluster_numbers_metrics.py h4_square 6-31g 1.0 --no-optimization --bond-dim 250 --n-sweeps 20
+
+Complete list of CLI arguments
+Required:
+molecule: Molecule name (h2, h2o, n2, lih, h4_linear, h4_square, h4_rectangle)
+basis_set: Basis set (e.g., sto-3g, 6-31g) 
+bond_length: Bond length in Angstrom
+Optional: 
+--bond-angle: Bond angle in degrees (for H2O, default: None)
+--max-transfers: Maximum electron transfers (default: 2) 
+--cluster-matrix: Custom cluster matrix as JSON array or path to file
+--bond-dim: DMRG bond dimension (default: 500) 
+--n-sweeps: Number of DMRG sweeps (default: 50)
+--cost-function: Cost function type (variance, eval_eq, mixed, default: variance)
+--var-exponent: Variance exponent (default: 1) 
+--maxiter: Maximum optimization iterations (default: 1000)
+--no-optimization: Skip orbital optimization 
+--bases: Which orbital bases to analyze (default: all 5 - MOs, optimized from MOs, NatOs, optimized from NatOs, random)
+--output-dir: Custom output directory 
+--plots-dir: Custom plots directory
+--no-plots: Disable plot generation 
+--show-plots: Display plots interactively
+--n-threads: Number of threads (default: 1)
+--no-reuse: Don't reuse existing wavefunction
+--verbose: Enable verbose logging
+
+Output Files
+Results are saved in a structured directory in the git-ignored outputs_:
+outputs_/cluster_number/
+  └── {molecule}/
+      └── {basis_set}/
+          └── bond_{length}/
+              [ └── angle_{angle}/ ]  # if bond_angle specified
+              └── max_transfers_{N}/
+                  └── results_{timestamp}_{git_hash}.json
+JSON output contains:
+metadata: molecule, basis_set, bond length/angle, max electron transfers, timestamp, git hash, norb, dmrg_energy, computation time
+basis_results: Array of results for each orbital basis with K_sectors values, energies, retained sectors count, dimension, and chemical accuracy flag
+"""
 
 import argparse
 import hashlib
@@ -21,6 +76,7 @@ from datetime import datetime
 from math import comb, inf
 from pathlib import Path
 from typing import Any
+from itertools import compress
 
 import numpy as np
 import pyscf
@@ -38,6 +94,7 @@ from src.cluster_number_operators import (
     number_and_parity_symmetry_sectors,
     number_eval_eq_cost,
     number_variance_cost,
+    extremality_cost,
     params_to_U_jax,
 )
 from src.dmrg_solver import Block2DMRGSolver, DMRGConfig, solve_or_load_ground_state
@@ -52,13 +109,13 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Data Structures
+# Data structures
 # =============================================================================
 
 
 @dataclass
 class BasisResult:
-    """Results for a single orbital basis analysis."""
+    """Results for a single orbital basis (e.g., MOs, NatOs, optimized from MOs) analysis."""
 
     data_label: str
     K_sectors_values: list[int]
@@ -70,7 +127,7 @@ class BasisResult:
 
 @dataclass
 class MetricsOutput:
-    """Complete output containing metadata and results for all bases."""
+    """Complete output containing metadata and results for all bases. One .json output file produced by this script containes one instance of this class."""
 
     metadata: dict[str, Any]
     basis_results: list[BasisResult] = field(default_factory=list)
@@ -134,7 +191,7 @@ class MetricsConfig:
 
 
 # =============================================================================
-# Helper Functions
+# Helper functions
 # =============================================================================
 
 
@@ -145,70 +202,66 @@ def get_cluster_matrix_from_config(config: MetricsConfig) -> np.ndarray:
     
     # Default cluster matrices for common molecules
     molecule = config.molecule.lower()
-    basis = config.basis_set.lower()
+    basis_set = config.basis_set.lower()
     
     # For H2 in minimal basis sets
-    if molecule == "h2" and basis == "sto-3g":
+    if molecule == "h2" and basis_set == "sto-3g":
         # H2 in sto-3g has 2 orbitals
         return np.array([
-            [1, 0],
-            [0, 1]
+            [1, 0]
         ])
     
-    if molecule == "h2" and basis == "6-31g":
-        # H2 in 6-31g has 5 orbitals
+    if molecule == "h2" and basis_set == "6-31g":
+        # H2 in 6-31g has 4 orbitals
         return np.array([
-            [1, 0, 0, 0, 0],
-            [0, 1, 0, 0, 0]
+            [1, 1, 0, 0, 0]
         ])
     
-    if molecule == "h4_square" and basis == "6-31g":
+    if molecule == "h4_square" and basis_set == "6-31g":
         # Default cluster matrix for H4 square in 6-31g (8 orbitals)
         return np.array([
-            [1, 0, 0, 0, 0, 0, 0, 1],
-            [0, 0, 1, 0, 1, 0, 0, 0],
-            [0, 1, 0, 1, 0, 0, 0, 0]
+            [1, 1, 0, 0, 0, 0, 0, 0],
+            [0, 0, 1, 1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 1, 1, 0, 0]
         ])
     
-    if molecule == "h4_square" and basis == "sto-3g":
+    if molecule == "h4_square" and basis_set == "sto-3g":
         # H4 square in sto-3g has 4 orbitals (one per H atom)
         return np.array([
-            [1, 0, 1, 0],
-            [0, 1, 0, 1]
+            [1, 0, 1, 0]
         ])
     
-    if molecule == "h2o" and basis == "sto-3g":
+    if molecule == "h2o" and basis_set == "sto-3g":
         # H2O in sto-3g has 7 orbitals
         return np.array([
-            [1, 0, 0, 0, 0, 0, 0],
-            [0, 1, 0, 0, 0, 0, 0],
-            [0, 0, 1, 0, 0, 0, 0]
+            [1, 1, 0, 0, 0, 0, 0],
+            [0, 0, 1, 1, 0, 0, 0],
+            [0, 0, 0, 0, 1, 1, 0]
         ])
     
-    if molecule == "h2o" and basis == "6-31g":
+    if molecule == "h2o" and basis_set == "6-31g":
         # H2O in 6-31g has 13 orbitals
         return np.array([
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            [1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0]
         ])
     
-    if molecule == "n2" and basis == "sto-3g":
-        # N2 in sto-3g has 6 orbitals
+    if molecule == "n2" and basis_set == "sto-3g":
+        # N2 in sto-3g has 10 orbitals
         return np.array([
-            [1, 0, 0, 0, 0, 0],
-            [0, 1, 0, 0, 0, 0]
+            [1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
         ])
     
-    if molecule == "lih" and basis == "sto-3g":
-        # LiH in sto-3g has 4 orbitals
+    if molecule == "lih" and basis_set == "sto-3g":
+        # LiH in sto-3g has 6 orbitals
         return np.array([
-            [1, 0, 0, 0],
-            [0, 1, 0, 0]
+            [1, 1, 0, 0, 0, 0],
+            [0, 0, 1, 1, 0, 0]
         ])
     
     raise ValueError(
-        f"No default cluster matrix for {config.molecule} with basis {config.basis_set}. "
+        f"No default cluster matrix for {config.molecule} with basis set {config.basis_set}. "
         "Please provide a cluster_matrix using --cluster-matrix argument."
     )
 
@@ -235,14 +288,14 @@ def validate_cluster_matrix(cluster_matrix: np.ndarray, norb: int) -> None:
 def create_output_dirs(config: MetricsConfig) -> tuple[Path, Path]:
     """Create output and plots directories based on configuration."""
     molecule = config.molecule.lower()
-    basis = config.basis_set.lower()
+    basis_set = config.basis_set.lower()
     bond_length_str = f"{config.bond_length:.4f}".replace(".", "_")
     
     # Build output directory path
     if config.output_dir is not None:
         output_dir = config.output_dir
     else:
-        output_dir = Path("outputs") / "cluster_metrics" / molecule / basis / f"bond_{bond_length_str}"
+        output_dir = Path("outputs_") / "cluster_number" / molecule / basis_set / f"bond_{bond_length_str}"
         if config.bond_angle is not None:
             angle_str = f"{config.bond_angle:.4f}".replace(".", "_")
             output_dir = output_dir / f"angle_{angle_str}"
@@ -252,7 +305,7 @@ def create_output_dirs(config: MetricsConfig) -> tuple[Path, Path]:
     if config.plots_dir is not None:
         plots_dir = config.plots_dir
     else:
-        plots_dir = Path("plots") / "cluster_metrics" / molecule / basis / f"bond_{bond_length_str}"
+        plots_dir = Path("plots") / "cluster_number" / molecule / basis_set / f"bond_{bond_length_str}"
         if config.bond_angle is not None:
             angle_str = f"{config.bond_angle:.4f}".replace(".", "_")
             plots_dir = plots_dir / f"angle_{angle_str}"
@@ -465,8 +518,11 @@ def optimize_orbital_basis(
                 with_ghost=False, 
                 var_exponent=config.var_exponent
             )
-            # For mixed, we would combine with extremality, but it's not implemented yet
-            f = f1
+            f2 = extremality_cost(D, cluster_matrix, with_ghost=False)
+            c1 = 1.
+            c2 = .5
+            def f(x):
+                return c1 * f1(x) + c2 * f2(x) # set some combination of f1, f2, f3; can also define manually f
         else:
             raise ValueError(f"Unsupported cost function: {config.type_cost_function}")
         
@@ -630,7 +686,7 @@ def compute_sector_analysis(
     return basis_results
 
 
-def compute_cluster_metrics(config: MetricsConfig) -> MetricsOutput:
+def compute_cluster_number_metrics(config: MetricsConfig) -> MetricsOutput:
     """
     Main function to compute cluster metrics.
     
@@ -817,94 +873,72 @@ def generate_plots(
     
     # Plot 1: Energy vs K_sectors
     if save:
-        plt.figure(figsize=(8, 5))
-        num_curves = len(data_label_list)
-        for i in range(num_curves):
-            plt.plot(
-                K_sectors_values_list[i], 
-                [e - metadata["dmrg_energy"] for e in K_sectors_energies_list[i]], 
-                "o-", 
-                label=data_label_list[i]
-            )
-        plt.axhline(CHEMICAL_PRECISION, color="r", linestyle="--", label="Chemical accuracy")
-        plt.xlabel("Number of retained sectors")
-        plt.ylabel("$E - E_{ref}$ (Ha)")
-        cluster_sizes = metadata.get("cluster_sizes", "?")
-        plt.title(
-            f"Energy against number of sectors for {metadata['molecule']} in {metadata['basis_set']} basis \n "
-            f"Num. orbitals = {metadata.get('norb', '?')}, cluster sizes = {cluster_sizes} + ghost, "
-            f"max $e^-$ transfers = {metadata['max_elec_transfers']}, var. exp. = {metadata.get('var_exponent', 1)}"
-        )
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.yscale("log")
-        plt.tight_layout()
-        plt.legend(loc="upper right")
-        
-        filename = f"energy_vs_sectors_{timestamp}.png"
-        filepath = plots_dir / filename
-        plt.savefig(filepath, dpi=300, bbox_inches="tight")
-        plt.close()
-        logger.info(f"Energy vs sectors plot saved to {filepath}")
-    
-    if show:
         plot_energy_vs_K_sectors(
             data_label_list,
             K_sectors_values_list,
             K_sectors_energies_list,
             metadata["dmrg_energy"],
             molecule=metadata["molecule"],
-            basis=metadata["basis_set"],
+            basis_set=metadata["basis_set"],
             norb=metadata.get("norb", "?"),
             cluster_sizes=metadata.get("cluster_sizes", "?"),
             max_elec_transfers=metadata["max_elec_transfers"],
             var_exponent=metadata.get("var_exponent", 1)
         )
+        
+        filename = f"energy_vs_sectors_{timestamp}.png"
+        filepath = plots_dir / filename
+        plt.savefig(filepath, dpi=300, bbox_inches="tight")
+        logger.info(f"Energy vs sectors plot saved to {filepath}")
+    if show:
+        plt.show()
+    else:
+        plt.close()
     
     # Plot 2: Dual bar chart
-    if save:
-        plt.figure(figsize=(8, 5))
-        
+    chem_accuracy_reached_list = [result.chem_accuracy_reached for result in output.basis_results]
+    if not any(chem_accuracy_reached_list):
+        print("No basis reached chemical accuracy. Skipping 2nd plot (dual bar chart).")
+    else:
         # Prepare data for dual bar chart
         x_data = data_label_list
         y1_data = num_retained_sectors_list
         y2_data = retained_dim_list
-        
-        title = (
-            f"Sector analysis for {metadata['molecule']} in {metadata['basis_set']} basis \n "
-            f"Num. orbitals = {metadata.get('norb', '?')}, cluster sizes = {metadata.get('cluster_sizes', '?')}, "
-            f"max $e^-$ transfers = {metadata['max_elec_transfers']}"
-        )
-        
-        plot_dual_bar_chart(
-            x_data=x_data,
-            y1_data=y1_data,
-            y2_data=y2_data,
-            label1="Number of retained sectors",
-            label2="Retained dimension",
-            title=title,
-            colors=None,
-            alpha=(0.8, 0.4)
-        )
-        
-        filename = f"retained_sectors_bar_chart_{timestamp}.png"
-        filepath = plots_dir / filename
-        plt.savefig(filepath, dpi=300, bbox_inches="tight")
-        plt.close()
-        logger.info(f"Retained sectors bar chart saved to {filepath}")
-    
-    if show:
-        plot_dual_bar_chart(
-            x_data=data_label_list,
-            y1_data=num_retained_sectors_list,
-            y2_data=retained_dim_list,
-            label1="Number of retained sectors",
-            label2="Retained dimension",
-            title=f"Sector analysis for {metadata['molecule']}",
-            colors=None,
-            alpha=(0.8, 0.4)
-        )
+        colors = [f'C{i}' for i in range(len(output.basis_results))]
+        colors_cp = list(compress(colors, chem_accuracy_reached_list))
+        x_data_cp = list(compress(x_data, chem_accuracy_reached_list))
+        y1_data_cp = list(compress(y1_data, chem_accuracy_reached_list))
+        y2_data_cp = list(compress(y2_data, chem_accuracy_reached_list))
 
+        if save:
+            plt.figure(figsize=(8, 5))
+            
+            title = (
+                f"Sector analysis for {metadata['molecule']} in {metadata['basis_set']} basis set \n "
+                f"Num. orbitals = {metadata.get('norb', '?')}, cluster sizes = {metadata.get('cluster_sizes', '?')}, "
+                f"max $e^-$ transfers = {metadata['max_elec_transfers']}"
+            )
+
+            plot_dual_bar_chart(
+                x_data=x_data_cp,
+                y1_data=y1_data_cp,
+                y2_data=y2_data_cp,
+                label1="Number of retained sectors",
+                label2="Retained dimension",
+                title=title,
+                colors=colors_cp,
+                alpha=(0.8, 0.4)
+            )
+            
+            filename = f"retained_sectors_bar_chart_{timestamp}.png"
+            filepath = plots_dir / filename
+            plt.savefig(filepath, dpi=300, bbox_inches="tight")
+            logger.info(f"Retained sectors bar chart saved to {filepath}")
+        
+        if show:
+            plt.show()
+        else:
+            plt.close()
 
 # =============================================================================
 # CLI Interface
@@ -1126,13 +1160,13 @@ def main() -> None:
     if args.bases is not None:
         config.analyze_bases = args.bases
     
-    logger.info(f"Starting computation for {args.molecule} in {args.basis_set} basis")
-    logger.info(f"Configuration: molecule={config.molecule}, basis={config.basis_set}, "
+    logger.info(f"Starting computation for {args.molecule} in {args.basis_set} basis set")
+    logger.info(f"Configuration: molecule={config.molecule}, basis set={config.basis_set}, "
                 f"bond_length={config.bond_length}, max_transfers={config.max_elec_transfers}")
     
     # Run computation
     try:
-        output = compute_cluster_metrics(config)
+        output = compute_cluster_number_metrics(config)
         
         # Save results
         output_dir, plots_dir = create_output_dirs(config)

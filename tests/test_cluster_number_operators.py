@@ -187,8 +187,8 @@ def test_get_cluster_indices():
         ])
     ]
 
-    clusters_list = [get_cluster_indices(cluster_matrix, cluster_matrix.shape[1]) for cluster_matrix in cluster_matrices]
-    clusters_list.append(get_cluster_indices(np.array([]), 5))
+    clusters_list = [get_cluster_indices(cluster_matrix, cluster_matrix.shape[1], with_ghost=True) for cluster_matrix in cluster_matrices]
+    clusters_list.append(get_cluster_indices(np.array([]), 5, with_ghost=True))
 
     expected_clusters_list = [
         [[], [0, 1, 2, 3, 4]],
@@ -206,7 +206,7 @@ def test_get_cluster_indices():
         for j in range(len(clusters)):
             assert np.all(clusters[j] == expected_clusters[j])
 
-    # without ghost
+    # without ghost (default)
     clusters_list_no_ghost = [get_cluster_indices(cluster_matrix, cluster_matrix.shape[1], with_ghost=False) for cluster_matrix in cluster_matrices]
     clusters_list_no_ghost.append(get_cluster_indices(np.array([]), 5, with_ghost=False))
 
@@ -428,49 +428,49 @@ class TestRdmRotationsLocalNumbers:
         ])
         ]
         for cluster_matrix in cluster_matrices:
+            for with_ghost in [True, False]:
+                # treat cluster info (see build_loc_number_evaluator implementation)
+                clusters = get_cluster_indices(cluster_matrix, self.norb, with_ghost=with_ghost)
+                cluster_pairs = []
+                for idx in clusters:
+                    k = idx.size
+                    tp, tq = np.triu_indices(k)  # local indices within this cluster
+                    cluster_pairs.append((idx[tp], idx[tq])) 
 
-            # treat cluster info (see build_loc_number_evaluator implementation)
-            clusters = get_cluster_indices(cluster_matrix, self.norb)
-            cluster_pairs = []
-            for idx in clusters:
-                k = idx.size
-                tp, tq = np.triu_indices(k)  # local indices within this cluster
-                cluster_pairs.append((idx[tp], idx[tq])) 
+                loc_number_evaluator = build_loc_number_evaluator(D, Gamma, cluster_matrix=cluster_matrix, with_ghost=with_ghost)
+                for U in self.Us:
+                    U_conj = np.conj(U)
 
-            loc_number_evaluator = build_loc_number_evaluator(D, Gamma, cluster_matrix=cluster_matrix)
-            for U in self.Us:
-                U_conj = np.conj(U)
+                    # PATH 1: efficient, orbital-space level way
+                    n1_eff, n2_eff = loc_number_evaluator(U)
 
-                # PATH 1: efficient, orbital-space level way
-                n1_eff, n2_eff = loc_number_evaluator(U)
+                    # PATH 2: inefficient, Fock-space level way
+                    # rotated psi as we do in cost functions
+                    psi_rotated = ffsim.apply_orbital_rotation(self.psi, U, self.norb, self.nelec)
 
-                # PATH 2: inefficient, Fock-space level way
-                # rotated psi as we do in cost functions
-                psi_rotated = ffsim.apply_orbital_rotation(self.psi, U, self.norb, self.nelec)
+                    # manually compute the local number expectation values
+                    n1_manual = [np.vdot(psi_rotated, op @ psi_rotated) for op in self.one_orb_num_operators]
+                    n2_manual = np.zeros((self.norb, self.norb))
+                    for P, Q in cluster_pairs:
+                        for i in range(len(P)):
+                            p = P[i]
+                            q = Q[i]
+                            n2_manual[p, q] = np.vdot(psi_rotated, self.one_orb_num_operators[p] @ self.one_orb_num_operators[q] @ psi_rotated).real
+                            n2_manual[q, p] = n2_manual[p, q]
+                    # filling the whole n2_manual as follows would error, unless there is only one big cluster:
+                    #for p in range(self.norb):
+                    #    for q in range(self.norb):
+                    #        n2_manual[p, q] = np.vdot(psi_rotated, self.one_orb_num_operators[p] @ self.one_orb_num_operators[q] @ psi_rotated).real
 
-                # manually compute the local number expectation values
-                n1_manual = [np.vdot(psi_rotated, op @ psi_rotated) for op in self.one_orb_num_operators]
-                n2_manual = np.zeros((self.norb, self.norb))
-                for P, Q in cluster_pairs:
-                    for i in range(len(P)):
-                        p = P[i]
-                        q = Q[i]
-                        n2_manual[p, q] = np.vdot(psi_rotated, self.one_orb_num_operators[p] @ self.one_orb_num_operators[q] @ psi_rotated).real
-                        n2_manual[q, p] = n2_manual[p, q]
-                # filling the whole n2_manual as follows would error, unless there is only one big cluster:
-                #for p in range(self.norb):
-                #    for q in range(self.norb):
-                #        n2_manual[p, q] = np.vdot(psi_rotated, self.one_orb_num_operators[p] @ self.one_orb_num_operators[q] @ psi_rotated).real
-
-                # COMPARE
-                tol = 1e-12
-                checks = [
-                    (n1_eff, n1_manual),
-                    (n2_eff, n2_manual)
-                ]
-                for (a, b) in checks:
-                    diff = np.max(np.abs(np.array(a) - b))
-                    assert diff < tol
+                    # COMPARE
+                    tol = 1e-12
+                    checks = [
+                        (n1_eff, n1_manual),
+                        (n2_eff, n2_manual)
+                    ]
+                    for (a, b) in checks:
+                        diff = np.max(np.abs(np.array(a) - b))
+                        assert diff < tol
 class TestNumberCostFunctions:
     """Testing the two new cluster number-specific cost functions."""
     norb = 6 # if this is modified, modify also downstream definition of cluster_matrix
@@ -512,7 +512,8 @@ class TestNumberCostFunctions:
     # get the full operators
     number_operators = number_matrix_to_operators(cluster_matrix, norb, nelec)
     ghost_number_op = number_matrix_to_operators(np.array([[0, 0, 0, 0, 0, 1]]), norb, nelec)[0]
-    number_operators.append(ghost_number_op)
+    number_operators_with_ghost = [op for op in number_operators]
+    number_operators_with_ghost.append(ghost_number_op)
 
     # initiate dummy moldata of type ffsim.MolecularData, needed for old cost functions, should have norb and nelec as above
     moldata = ffsim.MolecularData(
@@ -529,31 +530,42 @@ class TestNumberCostFunctions:
         number_tests = 10
         length_x = comb(self.norb, 2)
         xs = [np.random.rand(length_x) for _ in range(number_tests)]
-        variance_cost_rdm = number_variance_cost(self.D, self.Gamma, self.cluster_matrix)
+        variance_cost_with_ghost_rdm = number_variance_cost(self.D, self.Gamma, self.cluster_matrix, with_ghost=True)
+        variance_cost_with_ghost_ops = variance_cost_general(self.moldata, self.number_operators_with_ghost, self.psi)
+        variance_cost_rdm = number_variance_cost(self.D, self.Gamma, self.cluster_matrix, with_ghost=False)
         variance_cost_ops = variance_cost_general(self.moldata, self.number_operators, self.psi)
         for x in xs:
+            assert np.isclose(variance_cost_with_ghost_rdm(x), variance_cost_with_ghost_ops(x), atol = 1.e-10)
             assert np.isclose(variance_cost_rdm(x), variance_cost_ops(x), atol = 1.e-10)
 
     def test_number_eval_eq_cost(self):
-        # precompute guesse eigenvalues:
-        # PATH 1: with 1-rdm
-        evals_from_rdm = []
-        for cluster in get_cluster_indices(self.cluster_matrix, self.norb):
-            cluster_num_average = self.D[cluster, cluster].sum()
-            evals_from_rdm.append(round(cluster_num_average)) # best guess of eigenvalues
-        # PATH 2: with full state and operators
-        evals_from_state = [round(np.real(self.psi.T.conj() @ (op @ self.psi))) for op in self.number_operators] # best guess of eigenvalues
-        # check equality:
-        assert len(evals_from_rdm) == len(evals_from_state)
-        for i in range(len(evals_from_rdm)):
-            assert evals_from_rdm[i] == evals_from_state[i]
-        # for rdm path, we actually remove the ghost cluster:
-        evals_from_rdm.pop()
-        # create random inputs for cost functions
-        number_tests = 10
-        length_x = comb(self.norb, 2)
-        xs = [np.random.rand(length_x) for _ in range(number_tests)]
-        eval_eq_cost_rdm = number_eval_eq_cost(self.D, self.Gamma, self.cluster_matrix, evals_from_rdm)
-        eval_eq_cost_ops = eval_eq_cost(self.number_operators, evals_from_state, self.psi, self.norb, self.nelec)
-        for x in xs:
-            assert np.isclose(eval_eq_cost_rdm(x), eval_eq_cost_ops(x))
+        for with_ghost in [True, False]:
+            # precompute guessed eigenvalues:
+            # PATH 1: with 1-rdm
+            evals_from_rdm = []
+            for cluster in get_cluster_indices(self.cluster_matrix, self.norb, with_ghost=with_ghost):
+                cluster_num_average = self.D[cluster, cluster].sum()
+                evals_from_rdm.append(round(cluster_num_average)) # best guess of eigenvalues
+            # PATH 2: with full state and operators
+            if with_ghost:
+                evals_from_state = [round(np.real(self.psi.T.conj() @ (op @ self.psi))) for op in self.number_operators_with_ghost] # best guess of eigenvalues
+            else:
+                evals_from_state = [round(np.real(self.psi.T.conj() @ (op @ self.psi))) for op in self.number_operators]
+            # check equality:
+            assert len(evals_from_rdm) == len(evals_from_state)
+            for i in range(len(evals_from_rdm)):
+                assert evals_from_rdm[i] == evals_from_state[i]
+            # for rdm path, we actually remove the ghost cluster:
+            if with_ghost:
+                evals_from_rdm.pop()
+            # create random inputs for cost functions
+            number_tests = 10
+            length_x = comb(self.norb, 2)
+            xs = [np.random.rand(length_x) for _ in range(number_tests)]
+            eval_eq_cost_rdm = number_eval_eq_cost(self.D, self.Gamma, self.cluster_matrix, evals_from_rdm, with_ghost=with_ghost)
+            if with_ghost:
+                eval_eq_cost_ops = eval_eq_cost(self.number_operators_with_ghost, evals_from_state, self.psi, self.norb, self.nelec)
+            else:
+                eval_eq_cost_ops = eval_eq_cost(self.number_operators, evals_from_state, self.psi, self.norb, self.nelec)
+            for x in xs:
+                assert np.isclose(eval_eq_cost_rdm(x), eval_eq_cost_ops(x))

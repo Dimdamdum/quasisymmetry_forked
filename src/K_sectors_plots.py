@@ -9,6 +9,12 @@ from dataclasses import dataclass, field, asdict
 import json
 import glob
 
+# This file is piecewise AI-written and human-verified
+
+# =============================================================================
+# Core functions for computing metrics
+# =============================================================================
+
 def projected_energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_projections_in_sectors):
     """Compute energy using only the sectors with indices in retained_sectors"""
     # check definitions
@@ -108,15 +114,46 @@ def get_K_sectors_values_energies(psi, h_linop, ref_energy, sectors, max_elec_tr
         K_sectors_energies.append(e_K)
         error = e_K - ref_energy
         #print(f"K_sector={K_sectors:2d}: E={e_K:.8f}, Error={error:.8f} Ha = {error*27.2114:.4f} eV")
-    if verbose > 0:
         if error < CHEMICAL_PRECISION:
-            print(f"--> Chemical accuracy achieved at K_sector={K_sectors}!")
+            if verbose > 0:
+                print(f"--> Chemical accuracy achieved at K_sector={K_sectors}!")
             chem_accuracy_reached = True
         else:
-            print(f"--> Chemical accuracy not reached.")
+            if verbose > 0:
+                print(f"--> Chemical accuracy not reached.")
     return K_sectors_values, K_sectors_energies, retained_dim, chem_accuracy_reached
 
-def plot_energy_vs_K_sectors(data_label_list, K_sectors_values_list, K_sectors_energies_list, ref_energy, molecule='...', basis='...', norb='...', cluster_sizes='...', max_elec_transfers='...', var_exponent='...'):
+# =============================================================================
+# Plotting functions - see below for version where data is read from .json
+# =============================================================================
+
+def plot_energy_vs_K_sectors(
+    data_label_list,
+    K_sectors_values_list,
+    K_sectors_energies_list,
+    ref_energy,
+    molecule='...',
+    basis_set='...',
+    norb='...',
+    cluster_sizes='...',
+    max_elec_transfers='...',
+    var_exponent='...'
+):
+    """
+    Plot energy vs number of retained sectors.
+    
+    Args:
+        data_label_list: List of data labels
+        K_sectors_values_list: List of K sectors values for each basis
+        K_sectors_energies_list: List of K sectors energies for each basis
+        ref_energy: Reference energy
+        molecule: Molecule name (for title)
+        basis: Basis set of molecule object (for title)
+        norb: Number of orbitals (for title)
+        cluster_sizes: Cluster sizes (for title)
+        max_elec_transfers: Maximum electron transfers (for title)
+        var_exponent: Variance exponent (for title)
+    """
     plt.figure(figsize=(8, 5))
     num_curves = len(data_label_list)
     assert num_curves == len(K_sectors_values_list)
@@ -126,24 +163,35 @@ def plot_energy_vs_K_sectors(data_label_list, K_sectors_values_list, K_sectors_e
     plt.axhline(CHEMICAL_PRECISION, color='r', linestyle='--', label='Chemical accuracy')
     plt.xlabel('Number of retained sectors')
     plt.ylabel('$E - E_{ref}$ (Ha)')
-    plt.title(f'Energy against number of sectors for {molecule} in {basis} basis \n Num. orbitals = {norb}, cluster sizes = {cluster_sizes} + ghost, max $e^-$ transfers = {max_elec_transfers}, var. exp. = {var_exponent}')
+    plt.title(f'Energy against number of sectors for {molecule} in {basis_set} basis \n Num. orbitals = {norb}, cluster sizes = {cluster_sizes} + ghost, max $e^-$ transfers = {max_elec_transfers}, var. exp. = {var_exponent}')
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.yscale('log')
     plt.tight_layout()
     plt.legend(loc='upper right')
-    plt.show()
 
-def plot_dual_bar_chart(x_data, y1_data, y2_data,
-                        label1="...", label2="...",
-                        title="...", colors=None, alpha=(0.8, 0.4)):
+def plot_dual_bar_chart(
+    x_data,
+    y1_data,
+    y2_data,
+    label1="...",
+    label2="...",
+    title="...",
+    colors=None,
+    alpha=(0.8, 0.4)
+):
     """
     Plots a dual-axis bar chart for two sets of y-data sharing the same x-axis labels.
 
     Args:
-        colors: List of colors (one per x tick). Each color is used for both bars
-                at that position, with fading controlled by alpha.
-        alpha: Tuple of (alpha_for_y1, alpha_for_y2). Default: (0.8, 0.4).
+        x_data: List of x-axis labels
+        y1_data: First set of y-data
+        y2_data: Second set of y-data
+        label1: Label for first y-axis
+        label2: Label for second y-axis
+        title: Plot title
+        colors: List of colors (one per x tick)
+        alpha: Tuple of (alpha_for_y1, alpha_for_y2)
     """
     fig, ax1 = plt.subplots(figsize=(8, 5))
 
@@ -186,8 +234,6 @@ def plot_dual_bar_chart(x_data, y1_data, y2_data,
 
     plt.title(title)
     fig.tight_layout()
-    plt.show()
-
 
 # =============================================================================
 # Data Loading Functions
@@ -196,7 +242,7 @@ def plot_dual_bar_chart(x_data, y1_data, y2_data,
 
 def load_metrics_file(filepath: str | Path) -> dict[str, Any]:
     """
-    Load a JSON metrics file.
+    Load a single JSON metrics file.
     
     Args:
         filepath: Path to the JSON metrics file
@@ -214,9 +260,9 @@ def load_metrics_file(filepath: str | Path) -> dict[str, Any]:
     return data
 
 
-def aggregate_metrics(directory: str | Path, pattern: str = "results_*.json") -> list[dict]:
+def load_aggregate_metrics_files(directory: str | Path, pattern: str = "results_*.json") -> list[dict]:
     """
-    Aggregate multiple metrics files for comparison.
+    Load many JSON metrics files.
     
     Args:
         directory: Directory containing metrics files
@@ -244,14 +290,13 @@ def aggregate_metrics(directory: str | Path, pattern: str = "results_*.json") ->
 
 
 # =============================================================================
-# Enhanced Plotting Functions with File Support
+# Alternative plotting functions with file support
 # =============================================================================
 
 
 def plot_energy_vs_K_sectors_from_file(
     filepath: str | Path,
     output_path: str | Path | None = None,
-    show: bool = True,
     save: bool = True,
     **kwargs
 ) -> None:
@@ -261,7 +306,6 @@ def plot_energy_vs_K_sectors_from_file(
     Args:
         filepath: Path to the metrics JSON file
         output_path: Path to save the plot (default: None, auto-generated)
-        show: Whether to display the plot (default: True)
         save: Whether to save the plot to file (default: True)
         **kwargs: Additional arguments to pass to plot_energy_vs_K_sectors
     """
@@ -282,7 +326,7 @@ def plot_energy_vs_K_sectors_from_file(
     # Set default kwargs from metadata
     defaults = {
         "molecule": metadata.get("molecule", "..."),
-        "basis": metadata.get("basis_set", "..."),
+        "basis_set": metadata.get("basis_set", "..."),
         "norb": metadata.get("norb", "..."),
         "cluster_sizes": metadata.get("cluster_sizes", "..."),
         "max_elec_transfers": metadata.get("max_elec_transfers", "..."),
@@ -309,15 +353,12 @@ def plot_energy_vs_K_sectors_from_file(
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.close()
         print(f"Plot saved to {output_path}")
-    
-    if not show:
-        plt.close()
+
 
 
 def plot_dual_bar_chart_from_file(
     filepath: str | Path,
     output_path: str | Path | None = None,
-    show: bool = True,
     save: bool = True,
     **kwargs
 ) -> None:
@@ -327,7 +368,6 @@ def plot_dual_bar_chart_from_file(
     Args:
         filepath: Path to the metrics JSON file
         output_path: Path to save the plot (default: None, auto-generated)
-        show: Whether to display the plot (default: True)
         save: Whether to save the plot to file (default: True)
         **kwargs: Additional arguments to pass to plot_dual_bar_chart
     """
@@ -368,16 +408,14 @@ def plot_dual_bar_chart_from_file(
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.close()
         print(f"Plot saved to {output_path}")
-    
-    if not show:
-        plt.close()
 
 
+# example of lazy CLI call from root:
+# python -c "import sys; sys.path.append('src'); from K_sectors_plots import plot_all_metrics_in_directory; plot_all_metrics_in_directory('./outputs_/cluster_metrics/h4_square/6-31g/bond_1_0000/max_transfers_2')"
 def plot_all_metrics_in_directory(
     directory: str | Path,
     output_dir: str | Path | None = None,
     pattern: str = "results_*.json",
-    show: bool = False,
     save: bool = True,
 ) -> None:
     """
@@ -387,7 +425,6 @@ def plot_all_metrics_in_directory(
         directory: Directory containing metrics files
         output_dir: Directory to save plots (default: same as directory/plots)
         pattern: Glob pattern to match metrics files (default: "results_*.json")
-        show: Whether to display plots (default: False)
         save: Whether to save plots to files (default: True)
     """
     directory = Path(directory)
@@ -429,7 +466,6 @@ def plot_all_metrics_in_directory(
                 plot_energy_vs_K_sectors_from_file(
                     filepath, 
                     output_path=output_path, 
-                    show=show, 
                     save=True
                 )
             
@@ -439,7 +475,6 @@ def plot_all_metrics_in_directory(
                 plot_dual_bar_chart_from_file(
                     filepath,
                     output_path=output_path,
-                    show=show,
                     save=True
                 )
             
@@ -447,128 +482,3 @@ def plot_all_metrics_in_directory(
             print(f"Error processing {filepath}: {e}")
     
     print("Finished processing all metrics files")
-
-
-# =============================================================================
-# Modified Plotting Functions with Optional Display
-# =============================================================================
-
-
-def plot_energy_vs_K_sectors(
-    data_label_list,
-    K_sectors_values_list,
-    K_sectors_energies_list,
-    ref_energy,
-    molecule='...',
-    basis='...',
-    norb='...',
-    cluster_sizes='...',
-    max_elec_transfers='...',
-    var_exponent='...',
-    show: bool = True
-):
-    """
-    Plot energy vs number of retained sectors.
-    
-    Args:
-        data_label_list: List of data labels
-        K_sectors_values_list: List of K sectors values for each basis
-        K_sectors_energies_list: List of K sectors energies for each basis
-        ref_energy: Reference energy
-        molecule: Molecule name (for title)
-        basis: Basis set (for title)
-        norb: Number of orbitals (for title)
-        cluster_sizes: Cluster sizes (for title)
-        max_elec_transfers: Maximum electron transfers (for title)
-        var_exponent: Variance exponent (for title)
-        show: Whether to display the plot (default: True)
-    """
-    plt.figure(figsize=(8, 5))
-    num_curves = len(data_label_list)
-    assert num_curves == len(K_sectors_values_list)
-    assert num_curves == len(K_sectors_energies_list)
-    for i in range(num_curves):
-        plt.plot(K_sectors_values_list[i], [e - ref_energy for e in K_sectors_energies_list[i]], 'o-', label=data_label_list[i])
-    plt.axhline(CHEMICAL_PRECISION, color='r', linestyle='--', label='Chemical accuracy')
-    plt.xlabel('Number of retained sectors')
-    plt.ylabel('$E - E_{ref}$ (Ha)')
-    plt.title(f'Energy against number of sectors for {molecule} in {basis} basis \n Num. orbitals = {norb}, cluster sizes = {cluster_sizes} + ghost, max $e^-$ transfers = {max_elec_transfers}, var. exp. = {var_exponent}')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.yscale('log')
-    plt.tight_layout()
-    plt.legend(loc='upper right')
-    
-    if show:
-        plt.show()
-
-
-def plot_dual_bar_chart(
-    x_data,
-    y1_data,
-    y2_data,
-    label1="...",
-    label2="...",
-    title="...",
-    colors=None,
-    alpha=(0.8, 0.4),
-    show: bool = True
-):
-    """
-    Plots a dual-axis bar chart for two sets of y-data sharing the same x-axis labels.
-
-    Args:
-        x_data: List of x-axis labels
-        y1_data: First set of y-data
-        y2_data: Second set of y-data
-        label1: Label for first y-axis
-        label2: Label for second y-axis
-        title: Plot title
-        colors: List of colors (one per x tick)
-        alpha: Tuple of (alpha_for_y1, alpha_for_y2)
-        show: Whether to display the plot (default: True)
-    """
-    fig, ax1 = plt.subplots(figsize=(8, 5))
-
-    x = np.arange(len(x_data))
-    width = 0.35
-
-    if colors is None:
-        # Default: single colors for all bars
-        color1, color2 = 'tab:blue', 'tab:orange'
-        ax1.bar(x - width/2, y1_data, width, label=label1, color=color1)
-        ax2 = ax1.twinx()
-        ax2.bar(x + width/2, y2_data, width, label=label2, color=color2)
-    else:
-        # Per-bar-pair colors with fading
-        ax2 = ax1.twinx()
-        # Create proxy artists for legend
-        from matplotlib.patches import Patch
-        legend_elements = [
-            Patch(facecolor=colors[0], alpha=alpha[0], label=label1),
-            Patch(facecolor=colors[0], alpha=alpha[1], label=label2)
-        ]
-        ax1.legend(handles=legend_elements)
-
-        for i in range(len(x_data)):
-            base_color = colors[i % len(colors)]  # Cycles if needed
-            ax1.bar(x[i] - width/2, y1_data[i], width, color=base_color, alpha=alpha[0])
-            ax2.bar(x[i] + width/2, y2_data[i], width, color=base_color, alpha=alpha[1])
-
-    ax1.set_ylabel(label1)
-    ax1.tick_params(axis='y')
-    ax2.set_ylabel(label2)
-    ax2.tick_params(axis='y')
-
-    ax1.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-    ax2.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(x_data)
-    ax1.set_xlabel('Basis')
-
-    plt.title(title)
-    fig.tight_layout()
-    
-    if show:
-        plt.show()
