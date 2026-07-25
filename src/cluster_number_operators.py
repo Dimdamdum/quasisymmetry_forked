@@ -195,15 +195,17 @@ def build_loc_number_evaluator(D, Gamma, cluster_matrix=np.array([]), with_ghost
         D (ndarray): The spin-summed 1-reduced density matrix (1-RDM) of an underlying state psi.
         Gamma (ndarray): The spin-summed 2-reduced density matrix (2-RDM) of psi.
         cluster_matrix (ndarray): A binary matrix/list defining the orbital 
-            clusters. Defaults to `np.array([])`, which groups all orbitals together into a single cluster.
-        with_ghost (bool): set to True to add a clusters with all orbitals that are not in cluster_matrix. Defaults to False.
+            clusters. E.g., a row [0, 1, 0, 1] identifies the cluster of orbitals 1 and 3 (out of a total of 4).
+            Defaults to `np.array([])`, which groups all orbitals together into a single cluster.
+        with_ghost (bool): set to True to add a clusters with all orbitals corresponding to zero columns of cluster_matrix.
+            Defaults to False.
 
     Returns:
         Callable: A function `loc_number_evaluator(U)` that takes:
             - U (ndarray): A norb x norb orbital unitary matrix.
             
             And returns:
-            - couple (ndarray, ndarray): The expectation values of $n_p$ and $n_p n_q$ (for orbitals $p, q$ 
+            - couple (ndarray, ndarray): The expectation values of the operators $n_p$ and $n_p n_q$ (for orbitals $p, q$ 
             belonging to the same cluster) evaluated on the transformed state 
             U^{otimes N} @ psi.
     """
@@ -399,3 +401,11 @@ def extremality_cost(D, cluster_matrix, with_ghost=False) -> Callable: # only ne
             total_cost += expected_n * (2 * cluster_size - expected_n)
         return total_cost
     return f
+
+import numpy as np
+import jax
+import jax.numpy as jnp
+from typing import Callable
+
+# def number_commutator_cost(h1e, g2e_full, D, Gamma, rdm3, rdm4, cluster_matrix, with_ghost=False) -> Callable:
+   

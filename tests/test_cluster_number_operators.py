@@ -569,3 +569,6 @@ class TestNumberCostFunctions:
                 eval_eq_cost_ops = eval_eq_cost(self.number_operators, evals_from_state, self.psi, self.norb, self.nelec)
             for x in xs:
                 assert np.isclose(eval_eq_cost_rdm(x), eval_eq_cost_ops(x))
+
+# def test_number_commutator_cost():
+
