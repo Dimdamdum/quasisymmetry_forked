@@ -11,7 +11,7 @@ See notebook cluster_numbers_search (same implementation, clearer structure).
 
 Usage:
     python cluster_numbers_metrics.py h4_square 6-31g 1.0 --max-transfers 2
-    python cluster_numbers_metrics.py h2o 6-31g 1.0 --bond-angle 104.5 --max-transfers 2
+    python cluster_numbers_metrics.py h2o 6-31g 1.0 --bond-angle 104.5 --max-transfers 2 --bases MOs "Opt. from MOs" "NatOs" "Opt. from NatOs"
 """
 
 """"
@@ -33,15 +33,15 @@ Required:
 molecule: Molecule name (h2, h2o, n2, lih, h4_linear, h4_square, h4_rectangle)
 basis_set: Basis set (e.g., sto-3g, 6-31g) 
 bond_length: Bond length in Angstrom
+cost_function: Cost function type (variance, eval_eq, mixed, extremality, commutator)
 Optional: 
 --bond-angle: Bond angle in degrees (for H2O, default: None)
 --max-transfers: Maximum electron transfers (default: 2) 
 --cluster-matrix: Custom cluster matrix as JSON array or path to file
 --bond-dim: DMRG bond dimension (default: 500) 
 --n-sweeps: Number of DMRG sweeps (default: 50)
---cost-function: Cost function type (variance, eval_eq, mixed, default: variance)
 --var-exponent: Variance exponent (default: 1) 
---maxiter: Maximum optimization iterations (default: 1000)
+--maxiter: Maximum optimization iterations (default: 500)
 --no-optimization: Skip orbital optimization 
 --bases: Which orbital bases to analyze (default: all 5 - MOs, optimized from MOs, NatOs, optimized from NatOs, random)
 --output-dir: Custom output directory 
@@ -62,7 +62,7 @@ outputs_/cluster_number/
               └── max_transfers_{N}/
                   └── results_{timestamp}_{git_hash}.json
 JSON output contains:
-metadata: molecule, basis_set, bond length/angle, max electron transfers, timestamp, git hash, norb, dmrg_energy, computation time
+metadata: molecule, basis_set, bond length/angle, max electron transfers, timestamp, git hash, norb, dmrg_energy, computation time, cost
 basis_results: Array of results for each orbital basis with K_sectors values, energies, retained sectors count, dimension, and chemical accuracy flag
 """
 
@@ -96,6 +96,7 @@ from src.cluster_number_operators import (
     number_variance_cost,
     extremality_cost,
     params_to_U_jax,
+    number_commutator_cost_v1
 )
 from src.dmrg_solver import Block2DMRGSolver, DMRGConfig, solve_or_load_ground_state
 from src.K_sectors_plots import (
@@ -141,6 +142,7 @@ class MetricsConfig:
     molecule: str
     basis_set: str
     bond_length: float
+    type_cost_function: str
     bond_angle: float | None = None
     cluster_matrix: np.ndarray | None = None
     max_elec_transfers: int = 2
@@ -150,9 +152,8 @@ class MetricsConfig:
     n_sweeps: int = 50
 
     # Orbital optimization parameters
-    type_cost_function: str = "variance"
     var_exponent: int = 1
-    maxiter: int = 1000
+    maxiter: int = 500
 
     # Computation options
     run_dmrg: bool = True
@@ -181,10 +182,10 @@ class MetricsConfig:
                 f"Unsupported molecule: {self.molecule}. "
                 "Supported: h2, h2o, n2, lih, h4_linear, h4_square, h4_rectangle"
             )
-        if self.type_cost_function not in ["variance", "eval_eq", "extremality", "mixed"]:
+        if self.type_cost_function not in ["variance", "eval_eq", "extremality", "mixed", "commutator"]:
             raise ValueError(
                 f"Unsupported cost function: {self.type_cost_function}. "
-                "Supported: variance, eval_eq, extremality, mixed"
+                "Supported: variance, eval_eq, extremality, mixed, commutator"
             )
         if self.max_elec_transfers < 0:
             raise ValueError("max_elec_transfers must be >= 0")
@@ -426,13 +427,9 @@ def compute_dmrg(config: MetricsConfig) -> tuple[Block2DMRGSolver, float, np.nda
     return solver, dmrg_energy, h1e, g2e, ecore, nelec, result
 
 
-def extract_rdms(solver: Block2DMRGSolver, mps_tag: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def extract_rdms(solver: Block2DMRGSolver, mps_tag: str, with_34_rdms=False) -> tuple[np.ndarray, np.ndarray]:
     """
-    Extract 1- and 2-RDMs from MPS.
-    
-    Returns:
-        rdm1_a, rdm1_b: 1-RDMs for alpha and beta
-        rdm2_aa, rdm2_ab, rdm2_bb: 2-RDMs for alpha-alpha, alpha-beta, beta-beta
+    Extract spin-summed 1- and 2-RDMs from MPS.
     """
     logger.info("Extracting RDMs from MPS...")
     
@@ -445,24 +442,69 @@ def extract_rdms(solver: Block2DMRGSolver, mps_tag: str) -> tuple[np.ndarray, np
     mps = solver.get_mps(tag=mps_tag)
     
     rdm1_a, rdm1_b = solver.driver.get_1pdm(mps)
-    rdm2_aa, rdm2_ab, rdm2_bb = solver.driver.get_2pdm(mps)
-    
-    logger.info(f"rdm1_a shape: {rdm1_a.shape}, trace: {np.trace(rdm1_a).round(8)}")
-    logger.info(f"rdm2_aa shape: {rdm2_aa.shape}")
-    
-    return rdm1_a, rdm1_b, rdm2_aa, rdm2_ab, rdm2_bb
+    D = rdm1_a + rdm1_b
+    logger.info(f"D shape: {D.shape}, trace: {np.trace(D).round(8)}")
 
+    rdm2_aa, rdm2_ab, rdm2_bb = solver.driver.get_2pdm(mps)
+    Gamma = rdm2_aa + rdm2_bb + rdm2_ab + rdm2_ab.transpose(1, 0, 3, 2)
+    logger.info(f"Gamma shape: {Gamma.shape}")
+
+    if not with_34_rdms:
+        return D, Gamma
+    
+    else:
+        # get 3-rdm and 4-rdm in MO basis
+        rdm3_aaa, rdm3_aab, rdm3_abb, rdm3_bbb = solver.driver.get_3pdm(mps)
+        rdm3 = (
+            rdm3_aaa 
+            + rdm3_aab + rdm3_aab.transpose(0, 2, 1, 4, 3, 5) + rdm3_aab.transpose(2, 1, 0, 5, 4, 3) 
+            + rdm3_abb + rdm3_abb.transpose(1, 0, 2, 3, 5, 4) + rdm3_abb.transpose(2, 1, 0, 5, 4, 3) 
+            + rdm3_bbb
+        )
+        logger.info(f"rdm3 shape: {rdm3.shape}")
+
+        rdm4_aaaa, rdm4_aaab, rdm4_aabb, rdm4_abbb, rdm4_bbbb = solver.driver.get_4pdm(mps)
+        rdm4 = (
+            # 0 betas (k=0)
+            rdm4_aaaa
+            
+            # 1 beta (k=1)
+            # Target beta positions: (3,), (2,), (1,), (0,)
+            + rdm4_aaab
+            + rdm4_aaab.transpose(0, 1, 3, 2,     5, 4, 6, 7) # (0, 1, 3, 2, 5, 4, 6, 7) 
+            + rdm4_aaab.transpose(0, 3, 2, 1,     6, 5, 4, 7) # (0, 3, 1, 2, 5, 6, 4, 7) 
+            + rdm4_aaab.transpose(3, 1, 2, 0,     7, 5, 6, 4) # (3, 0, 1, 2, 5, 6, 7, 4) 
+            
+            # 2 betas (k=2)
+            # Target beta positions: (2,3), (1,3), (1,2), (0,3), (0,2), (0,1)
+            + rdm4_aabb
+            + rdm4_aabb.transpose(0, 2, 1, 3,     4, 6, 5, 7) # (0, 2, 1, 3, 4, 6, 5, 7) 
+            + rdm4_aabb.transpose(0, 3, 2, 1,     6, 5, 4, 7) # (0, 2, 3, 1, 6, 4, 5, 7) 
+            + rdm4_aabb.transpose(2, 1, 0, 3,     4, 7, 6, 5) # (2, 0, 1, 3, 4, 6, 7, 5) 
+            + rdm4_aabb.transpose(3, 1, 2, 0,     7, 5, 6, 4) # (2, 0, 3, 1, 6, 4, 7, 5) 
+            + rdm4_aabb.transpose(2, 3, 0, 1,     6, 7, 4, 5) # (2, 3, 0, 1, 6, 7, 4, 5)
+            
+            # 3 betas (k=3)
+            # Target beta positions: (1,2,3), (0,2,3), (0,1,3), (0,1,2)
+            + rdm4_abbb
+            + rdm4_abbb.transpose(1, 0, 2, 3,     4, 5, 7, 6) # (1, 0, 2, 3, 4, 5, 7, 6) 
+            + rdm4_abbb.transpose(2, 1, 0, 3,     4, 7, 6, 5) # (1, 2, 0, 3, 4, 7, 5, 6) 
+            + rdm4_abbb.transpose(3, 1, 2, 0,     7, 5, 6, 4) # (1, 2, 3, 0, 7, 4, 5, 6) 
+            
+            # 4 betas (k=4)
+            + rdm4_bbbb
+        )
+        logger.info(f"rdm4 shape: {rdm4.shape}")
+        return D, Gamma, rdm3, rdm4
 
 def optimize_orbital_basis(
     config: MetricsConfig,
     norb: int,
     nelec: tuple[int, int],
-    rdm1_a: np.ndarray,
-    rdm1_b: np.ndarray,
-    rdm2_aa: np.ndarray,
-    rdm2_ab: np.ndarray,
-    rdm2_bb: np.ndarray,
+    rdms: tuple, # spin-summed 1- and 2-rdm, or spin-summed 1-, 2-, 3-, 4-rdms in MO basis
     cluster_matrix: np.ndarray,
+    h1e: np.ndarray,
+    g2e: np.ndarray
 ) -> tuple[list[np.ndarray], list[tuple[float, float]]]:
     """
     Optimize orbital basis starting from MOs and NatOs.
@@ -472,10 +514,12 @@ def optimize_orbital_basis(
         cost_data: List of (initial_cost, optimized_cost) tuples
     """
     logger.info("Starting orbital optimization...")
-    
-    # Prepare density matrices
-    D_MOs = rdm1_a + rdm1_b
-    Gamma_MOs = rdm2_aa + rdm2_bb + rdm2_ab + rdm2_ab.transpose(1, 0, 3, 2)
+
+    if len(rdms) == 2:
+        D_MOs, Gamma_MOs = rdms
+    if len(rdms) == 4:
+        D_MOs, Gamma_MOs, rdm3_MOs, rdm4_MOs = rdms
+        assert config.type_cost_function == 'commutator', "Cost function type is not commutator so rdm3 and rdm4 are useless, but were anyways computed"
     
     # Get Natural Orbitals
     spec, evecs = np.linalg.eigh(D_MOs)
@@ -511,7 +555,7 @@ def optimize_orbital_basis(
                 evals.append(round(cluster_num_average))
             f = number_eval_eq_cost(D, Gamma, cluster_matrix, evals, with_ghost=False)
         elif config.type_cost_function == "extremality":
-            raise NotImplementedError("extremality cost function not yet implemented")
+            f = extremality_cost(D, cluster_matrix, with_ghost=False)
         elif config.type_cost_function == "mixed":
             f1 = number_variance_cost(
                 D, Gamma, cluster_matrix, 
@@ -523,6 +567,17 @@ def optimize_orbital_basis(
             c2 = .5
             def f(x):
                 return c1 * f1(x) + c2 * f2(x) # set some combination of f1, f2, f3; can also define manually f
+        elif config.type_cost_function == "commutator":
+            assert len(rdms) == 4, "For commutator cost, rdms needs to contain up to 4-rdm."
+            g2e_full = pyscf.ao2mo.restore(1, g2e, norb)
+            if np.allclose(D, D_MOs, atol=1e-12): # we are using MOs
+                f = number_commutator_cost_v1(h1e, g2e_full, D, Gamma, rdm3_MOs, rdm4_MOs, cluster_matrix, with_ghost=False)
+            if np.allclose(D, D_NatOs, atol=1e-12): # we are using natural orbitals
+                rdm3_rotated = np.einsum('pi,qj,rk,sl,tm,un,ijklmn->pqrstu', U_NatOs_conj, U_NatOs_conj, U_NatOs_conj, U_NatOs, U_NatOs, U_NatOs, rdm3_MOs, optimize=True)
+                rdm4_rotated = np.einsum('pi,qj,rk,sl,tm,un,vo,wa,ijklmnoa->pqrstuvw', U_NatOs_conj, U_NatOs_conj, U_NatOs_conj, U_NatOs_conj, U_NatOs, U_NatOs, U_NatOs, U_NatOs, rdm4_MOs, optimize=True)
+                h1e_rotated = np.einsum('pr,qs,rs->pq', U_NatOs, U_NatOs_conj, h1e, optimize=True)
+                g2e_full_rotated = np.einsum('pr,tu,qs,vz,rsuz->pqtv', U_NatOs, U_NatOs, U_NatOs_conj, U_NatOs_conj, g2e_full, optimize=True)
+                f = number_commutator_cost_v1(h1e_rotated, g2e_full_rotated, D, Gamma, rdm3_rotated, rdm4_rotated, cluster_matrix, with_ghost=False)
         else:
             raise ValueError(f"Unsupported cost function: {config.type_cost_function}")
         
@@ -718,6 +773,7 @@ def compute_cluster_number_metrics(config: MetricsConfig) -> MetricsOutput:
         "git_hash": get_git_hash(),
         "norb": None,
         "dmrg_energy": None,
+        "cost": config.type_cost_function,
     }
     
     # Step 1: Run DMRG
@@ -737,21 +793,25 @@ def compute_cluster_number_metrics(config: MetricsConfig) -> MetricsOutput:
     metadata["cluster_sizes"] = [int(round(sum(row))) for row in cluster_matrix]
     
     # Step 2: Extract RDMs
-    rdm1_a, rdm1_b, rdm2_aa, rdm2_ab, rdm2_bb = extract_rdms(solver, result.mps_tag)
-    
+    if config.type_cost_function == 'commutator':
+        rdms_MOs = extract_rdms(solver, result.mps_tag, with_34_rdms=True) # with 3rdm and 4rdm
+    else:
+        rdms_MOs = extract_rdms(solver, result.mps_tag, with_34_rdms=False) # without 3rdm and 4rdm
+
     # Step 3: Orbital optimization (if enabled)
     U_opt_list = []
     cost_data = []
     
     if config.run_orbital_optimization:
         U_opt_list, cost_data = optimize_orbital_basis(
-            config, norb, nelec, rdm1_a, rdm1_b, rdm2_aa, rdm2_ab, rdm2_bb, cluster_matrix
+            config, norb, nelec, rdms_MOs, cluster_matrix, h1e, g2e
         )
     
     # Step 4: Sector analysis for each basis
     # Prepare U_list and data_label_list based on which analyses to run
     U_list = []
     data_label_list = []
+    D_MOs = rdms_MOs[0]
     
     # Always add MOs
     U_list.append(np.eye(norb))
@@ -764,7 +824,6 @@ def compute_cluster_number_metrics(config: MetricsConfig) -> MetricsOutput:
     
     # Add NatOs
     if "NatOs" in config.analyze_bases:
-        D_MOs = rdm1_a + rdm1_b
         spec, evecs = np.linalg.eigh(D_MOs)
         U_NatOs = evecs.T
         U_list.append(U_NatOs)
@@ -772,7 +831,6 @@ def compute_cluster_number_metrics(config: MetricsConfig) -> MetricsOutput:
     
     # Add optimized from NatOs if available
     if "Opt. from NatOs" in config.analyze_bases and config.run_orbital_optimization and len(U_opt_list) > 1:
-        D_MOs = rdm1_a + rdm1_b
         spec, evecs = np.linalg.eigh(D_MOs)
         U_NatOs = evecs.T
         U_list.append(U_opt_list[1] @ U_NatOs)
@@ -883,7 +941,7 @@ def generate_plots(
             norb=metadata.get("norb", "?"),
             cluster_sizes=metadata.get("cluster_sizes", "?"),
             max_elec_transfers=metadata["max_elec_transfers"],
-            var_exponent=metadata.get("var_exponent", 1)
+            cost=metadata["cost"]
         )
         
         filename = f"energy_vs_sectors_{timestamp}.png"
@@ -916,7 +974,7 @@ def generate_plots(
             title = (
                 f"Sector analysis for {metadata['molecule']} in {metadata['basis_set']} basis set \n "
                 f"Num. orbitals = {metadata.get('norb', '?')}, cluster sizes = {metadata.get('cluster_sizes', '?')}, "
-                f"max $e^-$ transfers = {metadata['max_elec_transfers']}"
+                f"max $e^-$ transfers = {metadata['max_elec_transfers']}, cost = {metadata['cost']}"
             )
 
             plot_dual_bar_chart(
@@ -1000,6 +1058,11 @@ def create_parser() -> argparse.ArgumentParser:
         type=float,
         help="Bond length in Angstrom"
     )
+    parser.add_argument(
+        "cost_function",
+        type=str,
+        help="Cost function type (variance, eval_eq, extremality, mixed, commutator)"
+    )
     
     # Optional arguments
     parser.add_argument(
@@ -1037,13 +1100,6 @@ def create_parser() -> argparse.ArgumentParser:
     
     # Orbital optimization parameters
     parser.add_argument(
-        "--cost-function",
-        type=str,
-        default="variance",
-        choices=["variance", "eval_eq", "mixed"],
-        help="Cost function type (default: variance)"
-    )
-    parser.add_argument(
         "--var-exponent",
         type=int,
         default=1,
@@ -1052,8 +1108,8 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--maxiter",
         type=int,
-        default=1000,
-        help="Maximum optimization iterations (default: 1000)"
+        default=500,
+        help="Maximum optimization iterations (default: 500)"
     )
     parser.add_argument(
         "--no-optimization",
@@ -1139,12 +1195,12 @@ def main() -> None:
         molecule=args.molecule,
         basis_set=args.basis_set,
         bond_length=args.bond_length,
+        type_cost_function=args.cost_function,
         bond_angle=args.bond_angle,
         cluster_matrix=cluster_matrix,
         max_elec_transfers=args.max_transfers,
         bond_dim=args.bond_dim,
         n_sweeps=args.n_sweeps,
-        type_cost_function=args.cost_function,
         var_exponent=args.var_exponent,
         maxiter=args.maxiter,
         run_orbital_optimization=not args.no_optimization,

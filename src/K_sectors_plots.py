@@ -137,7 +137,7 @@ def plot_energy_vs_K_sectors(
     norb='...',
     cluster_sizes='...',
     max_elec_transfers='...',
-    var_exponent='...'
+    cost='...'
 ):
     """
     Plot energy vs number of retained sectors.
@@ -152,7 +152,7 @@ def plot_energy_vs_K_sectors(
         norb: Number of orbitals (for title)
         cluster_sizes: Cluster sizes (for title)
         max_elec_transfers: Maximum electron transfers (for title)
-        var_exponent: Variance exponent (for title)
+        cost: Cost type (for title)
     """
     plt.figure(figsize=(8, 5))
     num_curves = len(data_label_list)
@@ -163,7 +163,7 @@ def plot_energy_vs_K_sectors(
     plt.axhline(CHEMICAL_PRECISION, color='r', linestyle='--', label='Chemical accuracy')
     plt.xlabel('Number of retained sectors')
     plt.ylabel('$E - E_{ref}$ (Ha)')
-    plt.title(f'Energy against number of sectors for {molecule} in {basis_set} basis \n Num. orbitals = {norb}, cluster sizes = {cluster_sizes} + ghost, max $e^-$ transfers = {max_elec_transfers}, var. exp. = {var_exponent}')
+    plt.title(f'Energy against number of sectors for {molecule} in {basis_set} basis \n Num. orbitals = {norb}, cluster sizes = {cluster_sizes} + ghost, max $e^-$ transfers = {max_elec_transfers}, cost = {cost}')
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.yscale('log')
@@ -330,7 +330,7 @@ def plot_energy_vs_K_sectors_from_file(
         "norb": metadata.get("norb", "..."),
         "cluster_sizes": metadata.get("cluster_sizes", "..."),
         "max_elec_transfers": metadata.get("max_elec_transfers", "..."),
-        "var_exponent": metadata.get("var_exponent", "..."),
+        "cost": metadata.get("cost", "..."),
     }
     defaults.update(kwargs)
     
