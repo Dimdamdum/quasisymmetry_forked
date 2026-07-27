@@ -165,6 +165,7 @@ class MetricsConfig:
     # Output options
     output_dir: Path | None = None
     plots_dir: Path | None = None
+    wavefunction_dir: str = "wavefunctions"
     save_plots: bool = True
     show_plots: bool = False
 
@@ -401,7 +402,7 @@ def compute_dmrg(config: MetricsConfig) -> tuple[Block2DMRGSolver, float, np.nda
     geometry_key = hashlib.sha1(
         json.dumps(geometry, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     ).hexdigest()[:10]
-    store_dir = Path("wavefunctions") / (
+    store_dir = Path(config.wavefunction_dir) / ( 
         f"dmrg_{config.molecule}_{config.basis_set}_geom{geometry_key}_bd{config.bond_dim}_sw{config.n_sweeps}"
     )
     
@@ -871,7 +872,7 @@ def save_metrics(output: MetricsOutput, output_dir: Path) -> Path:
     timestamp = output.metadata.get("timestamp", get_timestamp())
     git_hash = output.metadata.get("git_hash", "unknown")
     
-    filename = f"results_{timestamp}_{git_hash}.json"
+    filename = f"results_"+output.metadata["cost"]+f"_{timestamp}_{git_hash}.json"
     filepath = output_dir / filename
     
     # Convert to dict for serialization
@@ -944,7 +945,7 @@ def generate_plots(
             cost=metadata["cost"]
         )
         
-        filename = f"energy_vs_sectors_{timestamp}.png"
+        filename = f"energy_vs_sectors_"+metadata["cost"]+f"_{timestamp}.png"
         filepath = plots_dir / filename
         plt.savefig(filepath, dpi=300, bbox_inches="tight")
         logger.info(f"Energy vs sectors plot saved to {filepath}")
@@ -988,7 +989,7 @@ def generate_plots(
                 alpha=(0.8, 0.4)
             )
             
-            filename = f"retained_sectors_bar_chart_{timestamp}.png"
+            filename = f"retained_sectors_bar_chart_"+metadata["cost"]+f"_{timestamp}.png"
             filepath = plots_dir / filename
             plt.savefig(filepath, dpi=300, bbox_inches="tight")
             logger.info(f"Retained sectors bar chart saved to {filepath}")
@@ -1140,6 +1141,12 @@ def create_parser() -> argparse.ArgumentParser:
         help="Plots directory"
     )
     parser.add_argument(
+        '--wavefunction-dir',
+        type=str,
+        default='wavefunctions',
+        help='Directory to store temporary DMRG wavefunction files'
+    )
+    parser.add_argument(
         "--no-plots",
         action="store_true",
         help="Disable plot generation"
@@ -1208,6 +1215,7 @@ def main() -> None:
         reuse_wavefunction=not args.no_reuse,
         output_dir=Path(args.output_dir) if args.output_dir else None,
         plots_dir=Path(args.plots_dir) if args.plots_dir else None,
+        wavefunction_dir=args.wavefunction_dir,
         save_plots=not args.no_plots,
         show_plots=args.show_plots,
     )

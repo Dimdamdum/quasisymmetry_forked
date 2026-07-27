@@ -1,12 +1,25 @@
 #!/bin/bash
 #SBATCH --job-name=metrics
-#SBATCH --output=cluster_metrics_%j.out
-#SBATCH --error=cluster_metrics_%j.err
+#SBATCH --output=logs/cluster_metrics_%A_%a.out
+#SBATCH --error=logs/cluster_metrics_%A_%a.err
 #SBATCH --time=01:00:00
-#SBATCH --partition=normal
+#SBATCH --array=0-1
+#SBATCH --partition small
 
-conda activate quasisym
+source quasisym/bin/activate
 
-python cluster_numbers_metrics.py h2o sto3g 1.0 'variance' --cluster-matrix '[[1,1,0,0,0,0,0],[0,0,1,1,0,0,0]]' --max-transfers 2 --bond-angle 104.5
-python cluster_numbers_metrics.py h2o sto3g 1.0 'eval_eq' --cluster-matrix '[[1,1,0,0,0,0,0],[0,0,1,1,0,0,0]]' --max-transfers 2 --bond-angle 104.5
-python cluster_numbers_metrics.py h2o sto3g 1.0 'extremality' --cluster-matrix '[[1,1,0,0,0,0,0],[0,0,1,1,0,0,0]]' --max-transfers 2 --bond-angle 104.5
+# Create a unique scratch directory for THIS specific array task ID.
+# This means each script runs dmrg. To be made more efficient later (e.g., first run dmrg, then get metrics by loading mps)
+export TMP_WAVEFUNCTION_DIR="wavefunctions/job_${SLURM_ARRAY_JOB_ID}_task_${SLURM_ARRAY_TASK_ID}"
+mkdir -p "$TMP_WAVEFUNCTION_DIR"
+
+types=('variance' 'extremality')
+t=${types[$SLURM_ARRAY_TASK_ID]}
+
+python cluster_numbers_metrics.py h2o sto3g 1.0 "$t" \
+    --cluster-matrix '[[1,1,0,0,0,0,0],[0,0,1,1,0,0,0]]' \
+    --max-transfers 2 --bond-angle 104.5 \
+    --wavefunction-dir "$TMP_WAVEFUNCTION_DIR"
+
+# clean up wavefunction files after job finishes to save disk space
+rm -rf "$TMP_WAVEFUNCTION_DIR"
