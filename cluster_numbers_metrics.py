@@ -46,6 +46,7 @@ Optional:
 --bases: Which orbital bases to analyze (default: all 5 - MOs, optimized from MOs, NatOs, optimized from NatOs, random)
 --output-dir: Custom output directory 
 --plots-dir: Custom plots directory
+--wavefunction-dir: Custom wavefunction directory
 --no-plots: Disable plot generation 
 --show-plots: Display plots interactively
 --n-threads: Number of threads (default: 1)

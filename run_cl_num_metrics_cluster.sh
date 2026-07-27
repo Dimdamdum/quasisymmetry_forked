@@ -4,13 +4,23 @@
 #SBATCH --error=logs/cluster_metrics_%A_%a.err
 #SBATCH --time=01:00:00
 #SBATCH --array=0-1
-#SBATCH --partition small
+#SBATCH --partition cluster
+
+#SBATCH --cpus-per-task=4   # Give it a few cores if DMRG needs them
+
+# --- Prevent thread oversubscription & deadlocks ---
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export VECLIB_MAXIMUM_THREADS=$SLURM_CPUS_PER_TASK
+export NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK
+# --------------------------------------------------
 
 source quasisym/bin/activate
 
 # Create a unique scratch directory for THIS specific array task ID.
 # This means each script runs dmrg. To be made more efficient later (e.g., first run dmrg, then get metrics by loading mps)
-export TMP_WAVEFUNCTION_DIR="wavefunctions/job_${SLURM_ARRAY_JOB_ID}_task_${SLURM_ARRAY_TASK_ID}"
+export TMP_WAVEFUNCTION_DIR="wavefunctions_job_${SLURM_ARRAY_JOB_ID}_task_${SLURM_ARRAY_TASK_ID}"
 mkdir -p "$TMP_WAVEFUNCTION_DIR"
 
 types=('variance' 'extremality')
