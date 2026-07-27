@@ -21,8 +21,11 @@ from optimize_symmetries import (
     parity_matrix_to_quasisymmetries,
     x_to_rotation,
 )
+from src.coupled_energy_core import (
+    all_sector_eigenpair_candidates,
+    one_shot_coupled_energy,
+)
 from src.energy_diagnostics import (
-    coupled_energy_perturbation,
     reference_coupled_energy_k,
     sector_data_from_gs_pairs,
     state_labels_for_columns,
@@ -966,17 +969,22 @@ if __name__ == "__main__":
         sector_data = sector_data_from_gs_pairs(
             sectors, sector_eigs, rotated_h_linop.shape[0]
         )
-        e_coupled, k_coupled, converged, chosen_keys = coupled_energy_perturbation(
+        candidates = all_sector_eigenpair_candidates(sector_data)
+        pt_result = one_shot_coupled_energy(
+            candidates,
             h_apply,
-            sector_data,
             e_exact=e_ref,
             tol=CHEMICAL_PRECISION,
         )
+        e_coupled, k_coupled, converged, chosen_keys = pt_result.as_tuple()
         print("E_coupled", e_coupled)
         print("K", k_coupled)
+        if pt_result.K_prefix is not None and pt_result.K_prefix != k_coupled:
+            print("K_prefix", pt_result.K_prefix)
         print("converged", converged)
         out_data["E_coupled"] = e_coupled
         out_data["K"] = k_coupled
+        out_data["K_prefix"] = pt_result.K_prefix
         out_data["converged"] = converged
         if not converged:
             print("PT coupled-energy did not converge within chemical precision")
