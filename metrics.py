@@ -157,6 +157,13 @@ def find_first_negative(f, N):
     return -1
 
 
+def roots_per_sector(args) -> int:
+    """Roots requested per sector: ``--n_roots`` or ``--states_per_sector``."""
+    if args.n_roots is not None:
+        return int(args.n_roots)
+    return int(args.states_per_sector)
+
+
 def solve_eigs(data):
     # mpi4py can't pickle the rotated_h_linop, so reconstruct it on each worker.
     from mpi4py import MPI
@@ -267,9 +274,6 @@ def _run_dmrg_from_oo_json(input_data, args, outname, out_data):
         n_threads=args.n_threads,
         reorder=args.reorder,
     )
-    states_per_sector = (
-        args.states_per_sector if args.states_per_sector < 50 else 5
-    )
     solve_start = time.perf_counter()
     report = run_dmrg_metrics(
         solver,
@@ -277,7 +281,7 @@ def _run_dmrg_from_oo_json(input_data, args, outname, out_data):
         config=DMRGConfig(max_bond_dim=args.bond_dim),
         penalty=args.penalty,
         max_sectors=args.max_sectors,
-        states_per_sector=states_per_sector,
+        states_per_sector=roots_per_sector(args),
         compute_k=True,
         compute_entanglement=args.entanglement,
     )
@@ -288,6 +292,7 @@ def _run_dmrg_from_oo_json(input_data, args, outname, out_data):
 
     out_data["backend"] = "dmrg"
     out_data["solver"] = "dmrg"  # alias for older consumers
+    out_data["states_per_sector"] = roots_per_sector(args)
     out_data["solve_time_s"] = float(solve_time_s)
     out_data["report_lines"] = lines
     out_data["E_FCI"] = report.e_reference
@@ -548,7 +553,7 @@ def run_clifford_metrics(args, input_data, out_data):
     if missing:
         raise ValueError(f"requested sector labels have no physical determinants: {missing}")
 
-    n_roots = args.n_roots if args.n_roots is not None else args.states_per_sector
+    n_roots = roots_per_sector(args)
     stage_start = time.time()
     physical_matrix = None
     if args.clifford_block_builder == "physical":
@@ -690,6 +695,7 @@ def run_clifford_metrics(args, input_data, out_data):
             "E_FCI": float(exact_energy),
             "E_decoupled": decoupled_energy,
             "dE": decoupled_energy - float(exact_energy),
+            "states_per_sector": n_roots,
             "candidate_count": len(candidates),
             "reference_weight_sum": (
                 float(np.sum(reference_weights)) if reference_weights.size else None
@@ -771,12 +777,20 @@ if __name__ == "__main__":
                         help="Davidson max iterations (--backend davidson)")
     parser.add_argument("--davidson_max_space", type=int, default=12,
                         help="Davidson max subspace size (--backend davidson)")
-    parser.add_argument("--states_per_sector", type=int, default=500)
+    parser.add_argument(
+        "--states_per_sector",
+        type=int,
+        default=500,
+        help=(
+            "eigenstates (roots) per sector for FCI/Davidson/DMRG PT K and "
+            "Clifford sector solves (default: 500)"
+        ),
+    )
     parser.add_argument(
         "--n_roots",
         type=int,
         default=None,
-        help="roots per tapered sector; defaults to --states_per_sector",
+        help="optional override for roots per sector; defaults to --states_per_sector",
     )
     parser.add_argument(
         "--sector_backend",
@@ -806,7 +820,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--parallel_sectors",
         action="store_true",
-        help="solve tapered sectors through mpi4py worker processes",
+        help=(
+            "parallelize sector solves via mpi4py (Clifford tapered sectors, "
+            "and CI/FCI/Davidson sector eigensolves). Needs free MPI slots; "
+            "on Fir prefer: srun -n N python -m mpi4py.futures metrics.py ..."
+        ),
     )
     parser.add_argument(
         "--parallel_coupled_blocks",
@@ -912,11 +930,13 @@ if __name__ == "__main__":
 
     use_davidson = args.backend == "davidson"
 
+    n_states = roots_per_sector(args)
+    out_data["states_per_sector"] = n_states
     tasks = [
         {
             "moldata": moldata,
             "rotated_h": rotated_h,
-            "states_per_sector": args.states_per_sector,
+            "states_per_sector": n_states,
             "sector_label": k,
             "sector_bitstrings": v,
             **(
@@ -936,12 +956,19 @@ if __name__ == "__main__":
     sector_eigs = {}
     sector_solver_meta = {}
     solve_start = time.perf_counter()
-    with MPIPoolExecutor() as executor:
-        for r in executor.map(worker, tasks):
-            label = tuple(r["sector_label"])
-            sector_eigs[label] = r["sector_eigs"]
-            if "meta" in r:
-                sector_solver_meta[str(list(label))] = r["meta"]
+    # Serial by default: MPIPoolExecutor Spawn needs free Open MPI slots and
+    # fails on many Fir interactive / single-slot runs. Opt in with
+    # --parallel_sectors (prefer: srun ... python -m mpi4py.futures metrics.py).
+    if args.parallel_sectors:
+        with MPIPoolExecutor() as executor:
+            results = list(executor.map(worker, tasks))
+    else:
+        results = list(map(worker, tasks))
+    for r in results:
+        label = tuple(r["sector_label"])
+        sector_eigs[label] = r["sector_eigs"]
+        if "meta" in r:
+            sector_solver_meta[str(list(label))] = r["meta"]
     solve_time_s = time.perf_counter() - solve_start
     out_data["solve_time_s"] = float(solve_time_s)
     if sector_solver_meta:
