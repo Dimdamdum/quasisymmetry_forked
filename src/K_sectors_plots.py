@@ -28,15 +28,22 @@ def projected_energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_p
         sector_label, (projection, norm_squared, energy) = ordered_state_projections_in_sectors[sector_index]
         compressed_coeffs += projection
 
+    # Calculate norm and safeguard against division by zero
+    norm = np.linalg.norm(compressed_coeffs)
+    if norm < 1e-15:
+        return np.nan
+
     # Normalize
-    compressed_coeffs /= np.linalg.norm(compressed_coeffs)
+    compressed_coeffs /= norm
 
     # Compute energy
     e_proj = compressed_coeffs.T.conj() @ h_linop @ compressed_coeffs
     return e_proj.real
 
+"""
+#BUG need to pass the whole sectors. easy to fix, if needed.
 def lowest_energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_projections_in_sectors):
-    """Return the exact lowest eigenvalue of H restricted to the selected sectors."""
+    # Return the exact lowest eigenvalue of H restricted to the selected sectors.
     selected_indices = []
 
     for sector_index in retained_sectors:
@@ -60,12 +67,17 @@ def lowest_energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_proj
     H_sub = 0.5 * (H_sub + H_sub.conj().T)
 
     return np.linalg.eigvalsh(H_sub)[0].real
+"""
 
 def energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_projections_in_sectors, projected_or_lowest):
+    # if lowest needed, should fix lowest_energy_few_sectors (easy)
+    # if projected_or_lowest == 'projected':
+    #    return projected_energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_projections_in_sectors)
+    # if projected_or_lowest == 'lowest':
+    #        return lowest_energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_projections_in_sectors)
+    assert projected_or_lowest == 'projected', "For now only projected_or_lowest='projected' is supported"
     if projected_or_lowest == 'projected':
         return projected_energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_projections_in_sectors)
-    if projected_or_lowest == 'lowest':
-            return lowest_energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_projections_in_sectors)
 
 def get_K_sectors_values_energies(psi, h_linop, ref_energy, sectors, max_elec_transfers, projected_or_lowest, max_K_sectors=inf, verbose=0):
     assert np.isclose(ref_energy, np.vdot(psi, h_linop @ psi).real, atol=1e-10)
@@ -255,20 +267,20 @@ def get_K_states_values_energies(psi, h_linop, ref_energy, sectors, max_elec_tra
         K_states += 1
         state_index += 1
         # state = ordered_decoupled_states[state_index][0] # not needed
-        sector_label = ordered_decoupled_states[state_index][0][0] # here we do discard the parity dummy entry
+        sector_label = ordered_decoupled_states[state_index][1][0] # here we do discard the parity dummy entry
         num_particles_moved = round(sum(np.abs(np.array(sector_label) - np.array(main_sector_label))) / 2)
         if num_particles_moved > max_elec_transfers:
             K_states -= 1 # failed attempt
             continue
         retained_states_indices.append(state_index)
         retained_sector_labels.add(sector_label)
-        num_retained_state_sectors += 1
+        num_retained_state_sectors = len(retained_sector_labels)
         if verbose > 0:
             print(f"One decoupled state from {sector_label} sector retained; {num_particles_moved} particles moved")
         e_K = energy_few_states(retained_states_indices, psi, h_linop, ordered_decoupled_states, projected_or_lowest)
-        K_states_values = []
-        K_states_energies = []
-        K_states_num_retained_state_sectors = []
+        K_states_values.append(K_states)
+        K_states_energies.append(e_K)
+        K_states_num_retained_state_sectors.append(num_retained_state_sectors)
         error = e_K - ref_energy
         if error < CHEMICAL_PRECISION:
             if verbose > 0:
@@ -277,8 +289,6 @@ def get_K_states_values_energies(psi, h_linop, ref_energy, sectors, max_elec_tra
         else:
             if verbose > 0:
                 print(f"--> Chemical accuracy not reached.")
-
-        assert len(retained_sector_labels) == K_states_num_retained_state_sectors[-1], "Sanity check on total number of retained sectors failed - code bug fix needed"
 
     return K_states_values, K_states_energies, K_states_num_retained_state_sectors, chem_accuracy_reached, retained_sector_labels
 
@@ -319,7 +329,7 @@ def plot_energy_vs_K(
     """
     assert sectors_or_states in ['sectors', 'states'], "sectors_or_states must be 'sectors' or 'states'"
 
-    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(8, 10), sharex=True, sharey=True)
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(8, 10), sharex=True)
 
     num_curves = len(data_label_list)
     assert num_curves == len(K_lists)
@@ -340,6 +350,7 @@ def plot_energy_vs_K(
     ax1.grid(True, alpha=0.3)
     ax1.set_yscale('log')
     ax1.legend(loc='upper right')
+    ax1.margins(y=0.1)
 
     # --- Second subplot (Bottom) ---
     ax2 = axes[1]
@@ -360,6 +371,7 @@ def plot_energy_vs_K(
     ax2.grid(True, alpha=0.3)
     ax2.set_yscale('log')
     # ax2.legend(loc='upper right')
+    ax2.margins(y=0.1)
 
     # --- Figure-level settings ---
     fig.suptitle(

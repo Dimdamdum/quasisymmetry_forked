@@ -4,7 +4,7 @@
 #SBATCH --error=logs/cluster_metrics_%A_%a.err
 #SBATCH --time=20:00:00
 #SBATCH --array=0-7
-#SBATCH --partition small
+#SBATCH --partition cluster
 #SBATCH --cpus-per-task=1  # Give it a few cores if DMRG needs them
 #SBATCH --mem=32G # 32 GB for medium cost DMRG or if 3- and 4-rdms are needed
 

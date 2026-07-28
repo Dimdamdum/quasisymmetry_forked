@@ -43,9 +43,12 @@ Optional:
 --var-exponent: Variance exponent (default: 1) 
 --maxiter: Maximum optimization iterations (default: 500)
 --no-optimization: Skip orbital optimization 
---bases: Which orbital bases to analyze (default: all 5 - MOs, optimized from MOs, NatOs, optimized from NatOs, random)
+--bases: Which orbital bases to analyze (default: MOs, optimized from MOs, NatOs, optimized from NatOs)
+--with-random: Include a random basis
 --skip-K-sectors: Skip sector-based analysis
 --skip-K-states: Skip decoupled state-based analysis
+--max-K-sectors: Maximum number of sectors (default: 50)
+--max-K-states: Maximum number of decoupled states (default: 50)
 --output-dir: Custom output directory 
 --plots-dir: Custom plots directory
 --wavefunction-dir: Wavefunction directory for input and output
@@ -181,12 +184,15 @@ class MetricsConfig:
     run_dmrg: bool = True
     run_orbital_optimization: bool = True
     analyze_bases: list[str] = field(default_factory=lambda: [
-        "MOs", "Opt. from MOs", "NatOs", "Opt. from NatOs", "Random"
+        "MOs", "Opt. from MOs", "NatOs", "Opt. from NatOs"
     ])
+    with_random: bool = False
 
     # Analysis options
     skip_K_sectors: bool = False
     skip_K_states: bool = False
+    max_K_sectors: int = 50
+    max_K_states: int = 50
 
     # Output options
     output_dir: Path | None = None
@@ -453,6 +459,24 @@ def compute_dmrg(config: MetricsConfig) -> tuple[Block2DMRGSolver, float, np.nda
     )
     dmrg_energy = result.energy
     logger.info(f"DMRG Energy: {dmrg_energy:.10f} Ha")
+
+    # guard against E_dmrg > H_HF (can happen for small systems if bond dim/n_sweeps is too large)
+    hf_energy = mf.e_tot
+    energy_tolerance = 1e-6 
+    if dmrg_energy > (hf_energy + energy_tolerance):
+        error_msg = (
+            f"Variational breakdown: DMRG energy ({dmrg_energy:.8f} Ha) is "
+            f"higher than HF energy ({hf_energy:.8f} Ha)."
+        )
+        logger.error(error_msg)
+        logger.error(
+            "This usually indicates numerical collapse due to an oversized "
+            "bond dimension or excessive sweeps for this active space."
+        )
+        # Raise an exception to safely crash the script and stop pipelines
+        raise RuntimeError(error_msg)
+
+    logger.info("Variational check passed: DMRG energy <= HF energy.")
     
     return solver, dmrg_energy, h1e, g2e, ecore, nelec, result
 
@@ -770,7 +794,7 @@ def compute_sector_analysis(
                         sectors, 
                         max_elec,  # Use the specific integer here
                         "projected",
-                        max_K_sectors=inf,
+                        max_K_sectors=config.max_K_sectors,
                         verbose=0
                     )
                 )
@@ -799,7 +823,7 @@ def compute_sector_analysis(
                                         sectors, 
                                         max_elec,  # Use the specific integer here
                                         "projected",
-                                        max_K_states=inf,
+                                        max_K_states=config.max_K_states,
                                         verbose=0
                                     )
                                 )
@@ -1346,7 +1370,12 @@ def create_parser() -> argparse.ArgumentParser:
         type=str,
         nargs="+",
         default=None,
-        help="Which bases to analyze (default: all)"
+        help="Which bases to analyze (default: MOs, opt. from MOs, NatOs, opt. from NatOs)"
+    )
+    parser.add_argument(
+        "--with-random",
+        action="store_true",
+        help="Add a random basis"
     )
 
     # Analysis options
@@ -1359,6 +1388,18 @@ def create_parser() -> argparse.ArgumentParser:
         "--skip-K-states",
         action="store_true",
         help="Disable decoupled states-based analysis"
+    )
+    parser.add_argument(
+        "--max-K-sectors",
+        type=int,
+        default=50,
+        help="Maximum number of sectors (default: 50)"
+    )
+    parser.add_argument(
+        "--max-K-states",
+        type=int,
+        default=50,
+        help="Maximum number of decoupled states (default: 50)"
     )
     
     # Output options
@@ -1449,6 +1490,8 @@ def main() -> None:
         reuse_wavefunction=not args.no_reuse,
         skip_K_sectors=args.skip_K_sectors,
         skip_K_states=args.skip_K_states,
+        max_K_sectors=args.max_K_sectors,
+        max_K_states=args.max_K_states,
         output_dir=Path(args.output_dir) if args.output_dir else None,
         plots_dir=Path(args.plots_dir) if args.plots_dir else None,
         wavefunction_dir=args.wavefunction_dir,
@@ -1459,6 +1502,8 @@ def main() -> None:
     # Override bases if specified
     if args.bases is not None:
         config.analyze_bases = args.bases
+    if args.with_random and "Random" not in config.analyze_bases:
+        config.analyze_bases.append("Random")
     
     logger.info(f"Starting computation for {args.molecule} in {args.basis_set} basis set")
     logger.info(f"Configuration: molecule={config.molecule}, basis set={config.basis_set}, "
