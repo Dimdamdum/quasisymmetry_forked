@@ -2,11 +2,11 @@
 #SBATCH --job-name=metrics
 #SBATCH --output=logs/cluster_metrics_%A_%a.out
 #SBATCH --error=logs/cluster_metrics_%A_%a.err
-#SBATCH --time=20:00:00
-#SBATCH --array=0-7
+#SBATCH --time=00:10:00
+#SBATCH --array=0-1
 #SBATCH --partition small
 #SBATCH --cpus-per-task=1  # Give it a few cores if DMRG needs them
-#SBATCH --mem=32G # 32 GB for medium cost DMRG or if 3- and 4-rdms are needed
+#SBATCH --mem=2G # 32 GB for medium cost DMRG or if 3- and 4-rdms are needed
 
 # # # block2-related fixes: start # # #
 # 1. Prevent thread oversubscription / hangs when using 1 CPU core
@@ -23,14 +23,19 @@ export MKL_ENABLE_INSTRUCTIONS=AVX2
 
 source quasisym/bin/activate
 
-minbondlength=0.8; maxbondlength=2.9; steps=8
+minbondlength=1.0; maxbondlength=1.2; steps=2
 bondlengths=($(seq $minbondlength $(awk "BEGIN {print ($maxbondlength - $minbondlength) / ($steps - 1)}") $maxbondlength))
 b=${bondlengths[$SLURM_ARRAY_TASK_ID]}
 
-python cluster_numbers_metrics.py n2 sto3g $b "variance" \
-    --cluster-matrix '[[1,1,1,0,0,0,0,0,0,0],[0,0,0,1,1,1,0,0,0,0],[0,0,0,0,0,0,1,1,0,0]]' \
-    --max-transfers 1 2 3 4 5 6
+# python cluster_numbers_metrics.py h4_linear sto3g $b "variance" \
+#    --cluster-matrix '[[1,1,0,0]]' \
+#    --max-transfers 1 2
 
-python cluster_numbers_metrics.py n2 sto3g $b "commutator" \
-    --cluster-matrix '[[1,1,1,0,0,0,0,0,0,0],[0,0,0,1,1,1,0,0,0,0],[0,0,0,0,0,0,1,1,0,0]]' \
-    --max-transfers 1 2 3 4 5 6
+# python cluster_numbers_metrics.py h4_linear sto3g $b "commutator" \
+#    --cluster-matrix '[[1,1,0,0]]' \
+#    --max-transfers 1 2
+
+python cluster_numbers_metrics.py h2o sto3g $b "variance" \
+    --cluster-matrix '[[1,1,0,0,0,0,0],[0,0,1,1,0,0,0]]' \
+    --max-transfers 1 2 \
+    --bond-angle 104.5

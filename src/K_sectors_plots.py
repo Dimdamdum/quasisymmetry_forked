@@ -1,5 +1,7 @@
 import numpy as np
+import scipy
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 from chemistry import CHEMICAL_PRECISION
 from math import inf
 import matplotlib.ticker as ticker
@@ -8,6 +10,7 @@ from typing import Any
 from dataclasses import dataclass, field, asdict
 import json
 import glob
+from src.sector_utils import subspace_matrix
 
 # This file is piecewise AI-written and human-verified
 
@@ -81,21 +84,23 @@ def get_K_sectors_values_energies(psi, h_linop, ref_energy, sectors, max_elec_tr
     #for sector_label, (projection, norm_squared, energy) in ordered_state_projections_in_sectors:
     #    print(f"Projection of psi into sector {sector_label}: norm squared = {norm_squared:.6f}, energy of projection = {energy:.6f}")
 
-    # Convergence in the number of sector states retained
+    # Convergence in the number of sectors retained - preparing output objects
     K_sectors_values = []
     K_sectors_energies = []
+    K_sectors_retained_dimensions = []
+    chem_accuracy_reached = False
 
     # Get label of main sector
-    main_sector_label = ordered_state_projections_in_sectors[0][0][0]
+    main_sector_label = ordered_state_projections_in_sectors[0][0][0] # here we do discard the parity dummy label
     if verbose > 0:
         print(f"Label of main sector: {main_sector_label}\n")
 
+    # temp objects
     K_sectors = 0 # number of retained sectors
     sector_index = -1
     error = inf
     retained_sectors = []
     retained_dim = 0
-    chem_accuracy_reached = False
 
     while error > CHEMICAL_PRECISION and sector_index < len(sectors) - 1 and K_sectors < max_K_sectors:
         K_sectors += 1
@@ -109,6 +114,7 @@ def get_K_sectors_values_energies(psi, h_linop, ref_energy, sectors, max_elec_tr
         retained_dim += len(sectors[ordered_state_projections_in_sectors[sector_index][0]])
         if verbose > 0:
             print(f"{sector_label} sector retained; {num_particles_moved} particles moved")
+        K_sectors_retained_dimensions.append(retained_dim)
         K_sectors_values.append(K_sectors)
         e_K = energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_projections_in_sectors, projected_or_lowest)
         K_sectors_energies.append(e_K)
@@ -116,14 +122,165 @@ def get_K_sectors_values_energies(psi, h_linop, ref_energy, sectors, max_elec_tr
         #print(f"K_sector={K_sectors:2d}: E={e_K:.8f}, Error={error:.8f} Ha = {error*27.2114:.4f} eV")
         if error < CHEMICAL_PRECISION:
             if verbose > 0:
-                print(f"--> Chemical accuracy achieved at K_sector={K_sectors}!")
+                print(f"--> Chemical accuracy achieved at K_sectors={K_sectors}!")
             chem_accuracy_reached = True
         else:
             if verbose > 0:
                 print(f"--> Chemical accuracy not reached.")
-    return K_sectors_values, K_sectors_energies, retained_dim, chem_accuracy_reached
+    return K_sectors_values, K_sectors_energies, K_sectors_retained_dimensions, chem_accuracy_reached
 
-# def get_K_states_values_energies(psi, h_linop, ref_energy, sectors, max_elec_transfers, projected_or_lowest, max_K_sectors=inf, verbose=0):
+# copy-pasted from metrics to avoid chain of import issues requiring quasisymmetries external import
+def orthogonalize_degenerate(w, V, tol=1e-10):
+    """Eigensolvers sometimes return non-orthogonal eigenvectors if they have
+    degenerate eigenvalues. This function rectifies that."""
+    V_orth = V.copy()
+
+    start = 0
+    while start < len(w):
+        end = start + 1
+        while end < len(w) and abs(w[end] - w[start]) < tol:
+            end += 1
+
+        # Orthogonalize this degenerate block
+        Q, _ = scipy.linalg.qr(V[:, start:end], mode="economic")
+        V_orth[:, start:end] = Q
+
+        start = end
+    return V_orth
+
+def projected_energy_few_states(retained_states_indices, psi, h_linop, ordered_decoupled_states):
+    """Compute energy using only the states with indices in retained_states_indices"""
+    
+    # Initialize an empty state in the full space
+    projected_state = np.zeros_like(psi, dtype=complex)
+    
+    # Reconstruct the state using only the retained decoupled eigenstates
+    for idx in retained_states_indices:
+        phi_i, sector_label, coeff = ordered_decoupled_states[idx]
+        
+        # Add the projection of psi onto this specific basis state
+        projected_state += coeff * phi_i
+
+    # Calculate norm and safeguard against division by zero
+    norm = np.linalg.norm(projected_state)
+    if norm < 1e-15:
+        return np.nan
+
+    # Normalize the reconstructed state
+    projected_state /= norm
+
+    # Compute energy (using np.vdot to automatically handle complex conjugation)
+    e_proj = np.vdot(projected_state, h_linop @ projected_state)
+    
+    return e_proj.real
+
+def energy_few_states(retained_states_indices, psi, h_linop, ordered_decoupled_states, projected_or_lowest):
+    assert projected_or_lowest == 'projected', "For now only projected_or_lowest='projected' is supported"
+    if projected_or_lowest == 'projected':
+        return projected_energy_few_states(retained_states_indices, psi, h_linop, ordered_decoupled_states)
+
+
+def get_K_states_values_energies(psi, h_linop, ref_energy, sectors, max_elec_transfers, projected_or_lowest, max_K_states=inf, verbose=0):
+
+    assert np.isclose(ref_energy, np.vdot(psi, h_linop @ psi).real, atol=1e-10)
+    assert np.isclose(0, np.vdot(psi, h_linop @ psi).imag, atol=1e-10)
+    assert projected_or_lowest == 'projected', "For now only projected_or_lowest='projected' is supported"
+
+    # Step 1: Build subspace Hamiltonians
+    sector_hamiltonians = {}
+    for sector_label, sector_indices in sectors.items():
+        sector_hamiltonians[sector_label] = subspace_matrix(
+        h_linop, sector_indices)
+
+    # Step 2: Diagonalize each sector
+    sector_energies = {}
+    sector_states = {}
+    for label, h_sub in sector_hamiltonians.items():
+        # Get all eigenvalues (full diagonalization for small systems)
+        w, v = np.linalg.eigh(h_sub)
+        v_orth = orthogonalize_degenerate(w, v)
+        sector_energies[label] = w
+        sector_states[label] = v_orth
+
+    # Step 3: Find the global ground state in decoupled sectors
+    # Each sector has its own ground state. The true ground state is the minimum.
+    sector_ground_energies = {label: energies[0] for label, energies in sector_energies.items()}
+    global_min_sector = min(sector_ground_energies, key=sector_ground_energies.get)
+    e_decoupled = sector_ground_energies[global_min_sector]
+
+    # Step 4: Construct full-space basis from sector states
+    # usage: decoupled_states[i] = tuple(full space decoupled eigenvector phi_i containing many zeros, tuple of symmetry eigenvalues, <phi_i|psi>) = (decoupled state, sector label, overlap with psi) 
+
+    decoupled_states = []
+    for label, indices in sectors.items():
+        # Get the states for this sector
+        v_sector = sector_states[label]
+        n_states = v_sector.shape[1] # [0] would be the dummy parity label
+
+        # Create full-space vectors (zeros everywhere except in this sector)
+        vectors_in_sector = np.zeros((h_linop.shape[0], n_states),
+                                    dtype='complex') # full dim * sector dim
+        vectors_in_sector[indices, :] = v_sector # each column (!) is a decoupled eigenstate
+
+        # Track which sector each state belongs to, and coeff <phi_i|psi> of psi on it
+        vectors_in_sector_with_labels = [
+        (vectors_in_sector[:, i], label, np.vdot(vectors_in_sector[:, i], psi)) 
+        for i in range(n_states)
+    ]
+        
+        decoupled_states.extend(vectors_in_sector_with_labels)
+
+    # Step 5: Order the decoupled basis pf phi_i's for decreasing |<phi_i|psi>|
+    ordered_decoupled_states = sorted(decoupled_states, key=lambda x: np.abs(x[2]), reverse=True)
+
+    # Step 6: Set output up and temp objects
+    K_states_values = []
+    K_states_energies = []
+    K_states_num_retained_state_sectors = []
+    chem_accuracy_reached = False
+    retained_sector_labels = set() # will contain labels (with discarded parity dummy entry) of the used sectors
+
+    main_sector_label = ordered_decoupled_states[0][1][0]  # here we do discard the parity dummy entry
+    if verbose > 0:
+        print(f"Label of main sector: {main_sector_label}\n")
+
+    K_states = 0 # number of retained sectors
+    state_index = -1
+    error = inf
+    retained_states_indices = [] # will contain indices of retained states
+    num_retained_state_sectors = 0
+    total_dim = len(psi)
+
+    while error > CHEMICAL_PRECISION and state_index < total_dim - 1 and K_states < max_K_states:
+        K_states += 1
+        state_index += 1
+        # state = ordered_decoupled_states[state_index][0] # not needed
+        sector_label = ordered_decoupled_states[state_index][0][0] # here we do discard the parity dummy entry
+        num_particles_moved = round(sum(np.abs(np.array(sector_label) - np.array(main_sector_label))) / 2)
+        if num_particles_moved > max_elec_transfers:
+            K_states -= 1 # failed attempt
+            continue
+        retained_states_indices.append(state_index)
+        retained_sector_labels.add(sector_label)
+        num_retained_state_sectors += 1
+        if verbose > 0:
+            print(f"One decoupled state from {sector_label} sector retained; {num_particles_moved} particles moved")
+        e_K = energy_few_states(retained_states_indices, psi, h_linop, ordered_decoupled_states, projected_or_lowest)
+        K_states_values = []
+        K_states_energies = []
+        K_states_num_retained_state_sectors = []
+        error = e_K - ref_energy
+        if error < CHEMICAL_PRECISION:
+            if verbose > 0:
+                print(f"--> Chemical accuracy achieved at K_states={K_states}!")
+            chem_accuracy_reached = True
+        else:
+            if verbose > 0:
+                print(f"--> Chemical accuracy not reached.")
+
+        assert len(retained_sector_labels) == K_states_num_retained_state_sectors[-1], "Sanity check on total number of retained sectors failed - code bug fix needed"
+
+    return K_states_values, K_states_energies, K_states_num_retained_state_sectors, chem_accuracy_reached, retained_sector_labels
 
 # =============================================================================
 # Plotting functions - see below for version where data is read from .json
@@ -133,6 +290,7 @@ def plot_energy_vs_K(
     data_label_list,
     K_lists,
     energies_lists,
+    retained_dimensions_or_num_sectors_list, # should be retained_dimensions if sectors_or_states == sectors, num_retained_state_sectors if sectors_or_states == states
     ref_energy,
     molecule='...',
     basis_set='...',
@@ -143,12 +301,13 @@ def plot_energy_vs_K(
     sectors_or_states='...'
 ):
     """
-    Plot energy vs list of integers K_list (either K_sectors_values_list or K_states_values_list).
+    Double plot: energy and retained dimension/retained num. of sectors vs list of integers K_list (either K_sectors_values_list or K_states_values_list).
     
     Args:
         data_label_list: List of data labels
         K_lists: List of lists of K values
         energies_lists: List of lists of energies
+        retained_dimensions_or_num_sectors_list: List of lists of retained dimensions/numbers of retained sectors
         ref_energy: Reference energy
         molecule: Molecule name (for title)
         basis: Basis set of molecule object (for title)
@@ -158,21 +317,60 @@ def plot_energy_vs_K(
         cost: Cost type (for title)
         sectors_or_states: 'sectors' or 'states'
     """
-    plt.figure(figsize=(8, 5))
+    assert sectors_or_states in ['sectors', 'states'], "sectors_or_states must be 'sectors' or 'states'"
+
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(8, 10), sharex=True, sharey=True)
+
     num_curves = len(data_label_list)
     assert num_curves == len(K_lists)
     assert num_curves == len(energies_lists)
+
+    # --- First subplot (Top) ---
+    ax1 = axes[0]
+    ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
     for i in range(num_curves):
-        plt.plot(K_lists[i], [e - ref_energy for e in energies_lists[i]], 'o-', label=data_label_list[i])
-    plt.axhline(CHEMICAL_PRECISION, color='r', linestyle='--', label='Chemical accuracy')
-    plt.xlabel('Number of retained '+sectors_or_states)
-    plt.ylabel('$E - E_{ref}$ (Ha)')
-    plt.title('Energy against number of '+sectors_or_states+f' for {molecule} in {basis_set} basis \n Num. orbitals = {norb}, cluster sizes = {cluster_sizes} + ghost, max $e^-$ transfers = {max_elec_transfers}, cost = {cost}')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.yscale('log')
-    plt.tight_layout()
-    plt.legend(loc='upper right')
+        ax1.plot(
+            K_lists[i], 
+            [e - ref_energy for e in energies_lists[i]], 
+            'o-', 
+            label=data_label_list[i]
+        )
+    ax1.axhline(CHEMICAL_PRECISION, color='r', linestyle='--', label='Chemical accuracy')
+    ax1.set_ylabel('$E - E_{ref}$ (Ha)')
+    ax1.grid(True, alpha=0.3)
+    ax1.set_yscale('log')
+    ax1.legend(loc='upper right')
+
+    # --- Second subplot (Bottom) ---
+    ax2 = axes[1]
+    ax2.xaxis.set_major_locator(MaxNLocator(integer=True))
+    for i in range(num_curves):
+        ax2.plot(
+            K_lists[i], 
+            retained_dimensions_or_num_sectors_list[i], 
+            'o-', 
+            label=data_label_list[i]
+        )
+    ax2.set_xlabel('Number of retained ' + sectors_or_states)
+    if sectors_or_states == 'sectors':
+        y_label = 'cumulative retained dimensions'
+    if sectors_or_states == 'states':
+        y_label = 'num. retained sectors'
+    ax2.set_ylabel(y_label)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_yscale('log')
+    # ax2.legend(loc='upper right')
+
+    # --- Figure-level settings ---
+    fig.suptitle(
+        'Energy against number of ' + sectors_or_states + 
+        f' for {molecule} in {basis_set} basis \n Num. orbitals = {norb}, ' +
+        f'cluster sizes = {cluster_sizes} + ghost, max $e^-$ transfers = {max_elec_transfers}, cost = {cost}',
+        y=0.98
+    )
+
+    return fig
+
 
 def plot_dual_bar_chart(
     x_data,
@@ -237,7 +435,8 @@ def plot_dual_bar_chart(
     ax1.set_xlabel('Basis')
 
     plt.title(title)
-    fig.tight_layout()
+
+    return fig
 
 # =============================================================================
 # Data Loading Functions
@@ -292,197 +491,3 @@ def load_aggregate_metrics_files(directory: str | Path, pattern: str = "results_
     
     return metrics_list
 
-
-# =============================================================================
-# Alternative plotting functions with file support
-# =============================================================================
-
-
-def plot_energy_vs_K_sectors_from_file(
-    filepath: str | Path,
-    output_path: str | Path | None = None,
-    save: bool = True,
-    **kwargs
-) -> None:
-    """
-    Load data from a metrics file and create energy vs K sectors plot.
-    
-    Args:
-        filepath: Path to the metrics JSON file
-        output_path: Path to save the plot (default: None, auto-generated)
-        save: Whether to save the plot to file (default: True)
-        **kwargs: Additional arguments to pass to plot_energy_vs_K_sectors
-    """
-    data = load_metrics_file(filepath)
-    
-    metadata = data.get("metadata", {})
-    basis_results = data.get("basis_results", [])
-    
-    if not basis_results:
-        raise ValueError(f"No basis_results found in {filepath}")
-    
-    # Extract data
-    data_label_list = [r.get("data_label", f"Basis {i}") for i, r in enumerate(basis_results)]
-    K_sectors_values_list = [r.get("K_sectors_values", []) for r in basis_results]
-    K_sectors_energies_list = [r.get("K_sectors_energies", []) for r in basis_results]
-    ref_energy = metadata.get("dmrg_energy", 0.0)
-    
-    # Set default kwargs from metadata
-    defaults = {
-        "molecule": metadata.get("molecule", "..."),
-        "basis_set": metadata.get("basis_set", "..."),
-        "norb": metadata.get("norb", "..."),
-        "cluster_sizes": metadata.get("cluster_sizes", "..."),
-        "max_elec_transfers": metadata.get("max_elec_transfers", "..."),
-        "cost": metadata.get("cost", "..."),
-    }
-    defaults.update(kwargs)
-    
-    # Create plot
-    plot_energy_vs_K_sectors(
-        data_label_list, K_sectors_values_list, K_sectors_energies_list,
-        ref_energy, **defaults
-    )
-    
-    # Save if requested
-    if save:
-        if output_path is None:
-            timestamp = metadata.get("timestamp", "unknown")
-            git_hash = metadata.get("git_hash", "unknown")
-            output_path = Path("plots") / f"energy_vs_sectors_{timestamp}_{git_hash}.png"
-        else:
-            output_path = Path(output_path)
-        
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        plt.close()
-        print(f"Plot saved to {output_path}")
-
-
-
-def plot_dual_bar_chart_from_file(
-    filepath: str | Path,
-    output_path: str | Path | None = None,
-    save: bool = True,
-    **kwargs
-) -> None:
-    """
-    Load data from a metrics file and create dual bar chart.
-    
-    Args:
-        filepath: Path to the metrics JSON file
-        output_path: Path to save the plot (default: None, auto-generated)
-        save: Whether to save the plot to file (default: True)
-        **kwargs: Additional arguments to pass to plot_dual_bar_chart
-    """
-    data = load_metrics_file(filepath)
-    
-    metadata = data.get("metadata", {})
-    basis_results = data.get("basis_results", [])
-    
-    if not basis_results:
-        raise ValueError(f"No basis_results found in {filepath}")
-    
-    # Extract data
-    x_data = [r.get("data_label", f"Basis {i}") for i, r in enumerate(basis_results)]
-    y1_data = [r.get("num_retained_sectors", 0) for r in basis_results]
-    y2_data = [r.get("retained_dim", 0) for r in basis_results]
-    
-    # Set default kwargs from metadata
-    defaults = {
-        "label1": "Number of retained sectors",
-        "label2": "Retained dimension",
-        "title": f"Sector analysis for {metadata.get('molecule', '...')} in {metadata.get('basis_set', '...')} basis",
-    }
-    defaults.update(kwargs)
-    
-    # Create plot
-    plot_dual_bar_chart(x_data, y1_data, y2_data, **defaults)
-    
-    # Save if requested
-    if save:
-        if output_path is None:
-            timestamp = metadata.get("timestamp", "unknown")
-            git_hash = metadata.get("git_hash", "unknown")
-            output_path = Path("plots") / f"retained_sectors_{timestamp}_{git_hash}.png"
-        else:
-            output_path = Path(output_path)
-        
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        plt.close()
-        print(f"Plot saved to {output_path}")
-
-
-# example of lazy CLI call from root:
-# python -c "import sys; sys.path.append('src'); from K_sectors_plots import plot_all_metrics_in_directory; plot_all_metrics_in_directory('./outputs_/cluster_metrics/h4_square/6-31g/bond_1_0000/max_transfers_2')"
-def plot_all_metrics_in_directory(
-    directory: str | Path,
-    output_dir: str | Path | None = None,
-    pattern: str = "results_*.json",
-    save: bool = True,
-) -> None:
-    """
-    Create all plots for all metrics files in a directory.
-    
-    Args:
-        directory: Directory containing metrics files
-        output_dir: Directory to save plots (default: same as directory/plots)
-        pattern: Glob pattern to match metrics files (default: "results_*.json")
-        save: Whether to save plots to files (default: True)
-    """
-    directory = Path(directory)
-    if not directory.exists():
-        raise FileNotFoundError(f"Directory not found: {directory}")
-    
-    # Set output directory
-    if output_dir is None:
-        output_dir = directory / "plots"
-    else:
-        output_dir = Path(output_dir)
-    
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Find all metrics files
-    metrics_files = list(directory.glob(pattern))
-    if not metrics_files:
-        print(f"No files matching pattern '{pattern}' found in {directory}")
-        return
-    
-    print(f"Found {len(metrics_files)} metrics files to process")
-    
-    # Process each file
-    for filepath in metrics_files:
-        try:
-            print(f"Processing {filepath.name}...")
-            
-            # Extract timestamp and git hash from filename if possible
-            name_parts = filepath.stem.split("_")
-            timestamp = None
-            git_hash = None
-            if len(name_parts) >= 3 and name_parts[0] == "results":
-                timestamp = name_parts[1]
-                git_hash = name_parts[2]
-            
-            # Plot energy vs sectors
-            if save:
-                output_path = output_dir / f"energy_vs_sectors_{filepath.stem}.png"
-                plot_energy_vs_K_sectors_from_file(
-                    filepath, 
-                    output_path=output_path, 
-                    save=True
-                )
-            
-            # Plot dual bar chart
-            if save:
-                output_path = output_dir / f"retained_sectors_{filepath.stem}.png"
-                plot_dual_bar_chart_from_file(
-                    filepath,
-                    output_path=output_path,
-                    save=True
-                )
-            
-        except Exception as e:
-            print(f"Error processing {filepath}: {e}")
-    
-    print("Finished processing all metrics files")

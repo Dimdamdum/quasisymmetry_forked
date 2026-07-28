@@ -44,6 +44,8 @@ Optional:
 --maxiter: Maximum optimization iterations (default: 500)
 --no-optimization: Skip orbital optimization 
 --bases: Which orbital bases to analyze (default: all 5 - MOs, optimized from MOs, NatOs, optimized from NatOs, random)
+--skip-K-sectors: Skip sector-based analysis
+--skip-K-states: Skip decoupled state-based analysis
 --output-dir: Custom output directory 
 --plots-dir: Custom plots directory
 --wavefunction-dir: Wavefunction directory for input and output
@@ -102,6 +104,7 @@ from src.cluster_number_operators import (
 from src.dmrg_solver import Block2DMRGSolver, DMRGConfig, solve_or_load_ground_state
 from src.K_sectors_plots import (
     get_K_sectors_values_energies,
+    get_K_states_values_energies,
     plot_dual_bar_chart,
     plot_energy_vs_K,
 )
@@ -119,11 +122,22 @@ logger = logging.getLogger(__name__)
 class SingleMaxelectransferResult:
     """Results for a specific max_elec_transfers value."""
     max_elec_transfers: int
+
+    # sector-based analysis
     K_sectors_values: list[int]
     K_sectors_energies: list[float]
+    K_sectors_retained_dimensions: list[int]
     num_retained_sectors: int
     retained_dim: int
-    chem_accuracy_reached: bool
+    chem_accuracy_reached_sectors: bool
+
+    # decoupled states-based analysis
+    K_states_values: list[int]
+    K_states_energies: list[float]
+    K_states_num_retained_state_sectors: list[int]
+    num_retained_states: int
+    num_retained_state_sectors: int # watch out, different from num_retained_sectors!
+    chem_accuracy_reached_states: bool
 
 
 @dataclass
@@ -169,6 +183,10 @@ class MetricsConfig:
     analyze_bases: list[str] = field(default_factory=lambda: [
         "MOs", "Opt. from MOs", "NatOs", "Opt. from NatOs", "Random"
     ])
+
+    # Analysis options
+    skip_K_sectors: bool = False
+    skip_K_states: bool = False
 
     # Output options
     output_dir: Path | None = None
@@ -714,7 +732,6 @@ def compute_sector_analysis(
     logger.info(f"Number of symmetry sectors identified: {len(sectors)}")
     logger.info(f"Max electron transfers across clusters (list): {config.max_elec_transfers}")
     
-    # Compute K_sectors for each basis
     for i in range(len(U_list)):
         data_label = data_label_list[i]
         psi = psi_rotated_list[i]
@@ -726,34 +743,81 @@ def compute_sector_analysis(
         
         # Loop through each max_elec limit specified in the configuration
         for max_elec in config.max_elec_transfers:
-            K_sectors_values, K_sectors_energies, retained_dim, chem_accuracy_reached = (
-                get_K_sectors_values_energies(
-                    psi, 
-                    h_linop, 
-                    dmrg_energy, 
-                    sectors, 
-                    max_elec,  # Use the specific integer here
-                    "projected",
-                    max_K_sectors=inf,
-                    verbose=0
-                )
-            )
-            
-            # Store data for this specific electron transfer limit
+            # Initialize result object with empty/default values
             transfer_result = SingleMaxelectransferResult(
                 max_elec_transfers=max_elec,
-                K_sectors_values=K_sectors_values,
-                K_sectors_energies=K_sectors_energies,
-                num_retained_sectors=len(K_sectors_values),
-                retained_dim=retained_dim,
-                chem_accuracy_reached=chem_accuracy_reached
+                K_sectors_values=[],
+                K_sectors_energies=[],
+                K_sectors_retained_dimensions=[],
+                num_retained_sectors=0,
+                retained_dim=None,
+                chem_accuracy_reached_sectors=False,
+
+                K_states_values=[],
+                K_states_energies=[],
+                K_states_num_retained_state_sectors=[],
+                num_retained_states=0,
+                num_retained_state_sectors=0,
+                chem_accuracy_reached_states=False
             )
+            if not config.skip_K_sectors:
+                # --- A) SECTOR-BASED APPROACH - Collect data ---
+                K_sectors_values, K_sectors_energies, K_sectors_retained_dimensions, chem_accuracy_reached_sectors = (
+                    get_K_sectors_values_energies(
+                        psi, 
+                        h_linop, 
+                        dmrg_energy, 
+                        sectors, 
+                        max_elec,  # Use the specific integer here
+                        "projected",
+                        max_K_sectors=inf,
+                        verbose=0
+                    )
+                )
+                
+                # Store data
+                transfer_result.K_sectors_values = K_sectors_values
+                transfer_result.K_sectors_energies = K_sectors_energies
+                transfer_result.K_sectors_retained_dimensions = K_sectors_retained_dimensions
+                transfer_result.num_retained_sectors = len(K_sectors_values)
+                transfer_result.retained_dim = K_sectors_retained_dimensions[-1]
+                transfer_result.chem_accuracy_reached_sectors = chem_accuracy_reached_sectors
+                
+                logger.info(
+                    f"  A) Sector-based approach - max_elec={max_elec}: {len(K_sectors_values)} sectors, "
+                    f"dim={K_sectors_retained_dimensions[-1]}, chem_accuracy={chem_accuracy_reached_sectors}"
+                )
+
+            if not config.skip_K_states:
+                # --- B) DECOUPLED STATE-BASED APPROACH - Collect data ---
+
+                K_states_values, K_states_energies, K_states_num_retained_state_sectors, chem_accuracy_reached_states, retained_sector_labels = (
+                                    get_K_states_values_energies(
+                                        psi, 
+                                        h_linop, 
+                                        dmrg_energy, 
+                                        sectors, 
+                                        max_elec,  # Use the specific integer here
+                                        "projected",
+                                        max_K_states=inf,
+                                        verbose=0
+                                    )
+                                )
+
+                transfer_result.K_states_values = K_states_values
+                transfer_result.K_states_energies = K_states_energies
+                transfer_result.K_states_num_retained_state_sectors = K_states_num_retained_state_sectors
+                transfer_result.num_retained_states = len(K_states_values)
+                transfer_result.num_retained_state_sectors = K_states_num_retained_state_sectors[-1]
+                transfer_result.chem_accuracy_reached_states = chem_accuracy_reached_states
+
+                logger.info(
+                    f"  B) State-based approach - max_elec={max_elec}: {len(K_states_values)} decoupled states, "
+                    f"num_sectors={K_states_num_retained_state_sectors[-1]}, chem_accuracy={chem_accuracy_reached_states}"
+                )
+                
+            # Store data from both sector- and state-based approaches
             transfer_results.append(transfer_result)
-            
-            logger.info(
-                f"  max_elec={max_elec}: {len(K_sectors_values)} sectors, "
-                f"dim={retained_dim}, chem_accuracy={chem_accuracy_reached}"
-            )
         
         # Package all transfer limit results into the final BasisResult
         basis_result = BasisResult(
@@ -965,9 +1029,11 @@ def generate_plots(
     plots_dir: Path,
     max_elec: int,
     show: bool = False,
-    save: bool = True
+    save: bool = True,
+    skip_K_sectors: bool = False,
+    skip_K_states: bool = False
 ) -> None:
-    """Generate and save plots from metrics output for a specific max electron transfer limit."""
+    """Generate and save two pairs of plots (sector-based + decoupled states-based pairs) from metrics output for a specific max electron transfer limit."""
     import matplotlib
     if not save:
         matplotlib.use("Agg")  # Use non-interactive backend if not saving
@@ -978,11 +1044,20 @@ def generate_plots(
     
     # Prepare data for plotting by filtering for max_elec
     data_label_list = []
+
     K_sectors_values_list = []
     K_sectors_energies_list = []
+    K_sectors_retained_dimensions_list = []
     num_retained_sectors_list = []
     retained_dim_list = []
-    chem_accuracy_reached_list = []
+    chem_accuracy_reached_sectors_list = []
+
+    K_states_values_list = []
+    K_states_energies_list = []
+    K_states_num_retained_state_sectors_list = []
+    num_retained_states_list = []
+    num_retained_state_sectors_list = []
+    chem_accuracy_reached_states_list = []
     
     for r in basis_results:
         tr = next((t for t in r.transfer_results if t.max_elec_transfers == max_elec), None)
@@ -990,11 +1065,20 @@ def generate_plots(
             continue
             
         data_label_list.append(r.data_label)
+
         K_sectors_values_list.append(tr.K_sectors_values)
         K_sectors_energies_list.append(tr.K_sectors_energies)
+        K_sectors_retained_dimensions_list.append(tr.K_sectors_retained_dimensions)
         num_retained_sectors_list.append(tr.num_retained_sectors)
         retained_dim_list.append(tr.retained_dim)
-        chem_accuracy_reached_list.append(tr.chem_accuracy_reached)
+        chem_accuracy_reached_sectors_list.append(tr.chem_accuracy_reached_sectors)
+
+        K_states_values_list.append(tr.K_states_values)
+        K_states_energies_list.append(tr.K_states_energies)
+        K_states_num_retained_state_sectors_list.append(tr.K_states_num_retained_state_sectors)
+        num_retained_states_list.append(tr.num_retained_states)
+        num_retained_state_sectors_list.append(tr.num_retained_state_sectors)
+        chem_accuracy_reached_states_list.append(tr.chem_accuracy_reached_states)
     
     # Guard clause in case there's no data matching the max_elec
     if not data_label_list:
@@ -1003,13 +1087,15 @@ def generate_plots(
 
     # Generate timestamp for filename
     timestamp = metadata.get("timestamp", get_timestamp())
-    
-    # Plot 1: Energy vs K_sectors
-    if save:
-        plot_energy_vs_K(
+
+    # --- A) Sector-based metrics ---
+    if not skip_K_sectors:
+        # Plot 1: Energy vs K_sectors
+        fig = plot_energy_vs_K(
             data_label_list,
             K_sectors_values_list,
             K_sectors_energies_list,
+            K_sectors_retained_dimensions_list,
             metadata["dmrg_energy"],
             molecule=metadata["molecule"],
             basis_set=metadata["basis_set"],
@@ -1019,37 +1105,33 @@ def generate_plots(
             cost=metadata["cost"],
             sectors_or_states='sectors'
         )
-        
-        filename = f"energy_vs_sectors_{metadata['cost']}_{timestamp}.png"
-        filepath = plots_dir / filename
-        plt.savefig(filepath, dpi=300, bbox_inches="tight")
-        logger.info(f"Energy vs sectors plot saved to {filepath}")
-    if show:
-        plt.show()
-    else:
-        plt.close()
-    
-    # Plot 2: Dual bar chart
-    if not any(chem_accuracy_reached_list):
-        print(f"No basis reached chemical accuracy for max_elec={max_elec}. Skipping 2nd plot (dual bar chart).")
-    else:
-        # Prepare data for dual bar chart
-        colors = [f'C{i}' for i in range(len(data_label_list))]
-        colors_cp = list(compress(colors, chem_accuracy_reached_list))
-        x_data_cp = list(compress(data_label_list, chem_accuracy_reached_list))
-        y1_data_cp = list(compress(num_retained_sectors_list, chem_accuracy_reached_list))
-        y2_data_cp = list(compress(retained_dim_list, chem_accuracy_reached_list))
-
         if save:
-            plt.figure(figsize=(8, 5))
-            
+            filename = f"energy_vs_sectors_{metadata['cost']}_{timestamp}.png"
+            filepath = plots_dir / filename
+            fig.savefig(filepath, dpi=300, bbox_inches="tight")
+            logger.info(f"Energy vs sectors plot saved to {filepath}")
+        if show:
+            plt.show()
+        plt.close(fig)
+        
+        # Plot 2: Dual bar chart
+        if not any(chem_accuracy_reached_sectors_list):
+            print(f"No basis reached chemical accuracy for max_elec={max_elec}. Skipping 2nd plot (dual bar chart).")
+        else:
+            # Prepare data for dual bar chart
+            colors = [f'C{i}' for i in range(len(data_label_list))]
+            colors_cp = list(compress(colors, chem_accuracy_reached_sectors_list))
+            x_data_cp = list(compress(data_label_list, chem_accuracy_reached_sectors_list))
+            y1_data_cp = list(compress(num_retained_sectors_list, chem_accuracy_reached_sectors_list))
+            y2_data_cp = list(compress(retained_dim_list, chem_accuracy_reached_sectors_list))
+                
             title = (
                 f"Sector analysis for {metadata['molecule']} in {metadata['basis_set']} basis set \n "
                 f"Num. orbitals = {metadata.get('norb', '?')}, cluster sizes = {metadata.get('cluster_sizes', '?')}, "
                 f"max $e^-$ transfers = {max_elec}, cost = {metadata['cost']}"
             )
 
-            plot_dual_bar_chart(
+            fig = plot_dual_bar_chart(
                 x_data=x_data_cp,
                 y1_data=y1_data_cp,
                 y2_data=y2_data_cp,
@@ -1059,16 +1141,84 @@ def generate_plots(
                 colors=colors_cp,
                 alpha=(0.8, 0.4)
             )
+
+            if save:
+                filename = f"retained_sectors_bar_chart_{metadata['cost']}_{timestamp}.png"
+                filepath = plots_dir / filename
+                fig.savefig(filepath, dpi=300, bbox_inches="tight")
+                logger.info(f"Retained sectors bar chart saved to {filepath}")
             
-            filename = f"retained_sectors_bar_chart_{metadata['cost']}_{timestamp}.png"
-            filepath = plots_dir / filename
-            plt.savefig(filepath, dpi=300, bbox_inches="tight")
-            logger.info(f"Retained sectors bar chart saved to {filepath}")
-        
-        if show:
-            plt.show()
-        else:
-            plt.close()
+            if show:
+                plt.show()
+            else:
+                plt.close(fig)
+
+    # --- B) Decoupled states-based metrics ---
+        if not skip_K_states:
+            # Plot 1: Energy vs K_states
+            fig = plot_energy_vs_K(
+                data_label_list,
+                K_states_values_list,
+                K_states_energies_list,
+                K_states_num_retained_state_sectors_list,
+                metadata["dmrg_energy"],
+                molecule=metadata["molecule"],
+                basis_set=metadata["basis_set"],
+                norb=metadata.get("norb", "?"),
+                cluster_sizes=metadata.get("cluster_sizes", "?"),
+                max_elec_transfers=max_elec,  # pass the specific integer here
+                cost=metadata["cost"],
+                sectors_or_states='states'
+            )
+            if save:
+                filename = f"energy_vs_states_{metadata['cost']}_{timestamp}.png"
+                filepath = plots_dir / filename
+                fig.savefig(filepath, dpi=300, bbox_inches="tight")
+                logger.info(f"Energy vs states plot saved to {filepath}")
+            if show:
+                plt.show()
+            plt.close(fig)
+
+            # Plot 2: Dual bar chart
+            if not any(chem_accuracy_reached_states_list):
+                print(f"No basis reached chemical accuracy for max_elec={max_elec}. Skipping 2nd plot (dual bar chart).")
+            else:
+                # Prepare data for dual bar chart
+                colors = [f'C{i}' for i in range(len(data_label_list))]
+                colors_cp = list(compress(colors, chem_accuracy_reached_states_list))
+                x_data_cp = list(compress(data_label_list, chem_accuracy_reached_states_list))
+                y1_data_cp = list(compress(num_retained_states_list, chem_accuracy_reached_states_list))
+                y2_data_cp = list(compress(num_retained_state_sectors_list, chem_accuracy_reached_states_list))
+
+                title = (
+                    f"State analysis for {metadata['molecule']} in {metadata['basis_set']} basis set \n "
+                    f"Num. orbitals = {metadata.get('norb', '?')}, cluster sizes = {metadata.get('cluster_sizes', '?')}, "
+                    f"max $e^-$ transfers = {max_elec}, cost = {metadata['cost']}"
+                )
+
+                fig = plot_dual_bar_chart(
+                    x_data=x_data_cp,
+                    y1_data=y1_data_cp,
+                    y2_data=y2_data_cp,
+                    label1="Number of retained states",
+                    label2="Number of retained state sectors",
+                    title=title,
+                    colors=colors_cp,
+                    alpha=(0.8, 0.4)
+                )
+
+                if save:
+                    filename = f"retained_states_bar_chart_{metadata['cost']}_{timestamp}.png"
+                    filepath = plots_dir / filename
+                    fig.savefig(filepath, dpi=300, bbox_inches="tight")
+                    logger.info(f"Retained states bar chart saved to {filepath}")
+
+                if show:
+                    plt.show()
+                else:
+                    plt.close(fig)
+
+
 
 # =============================================================================
 # CLI Interface
@@ -1198,6 +1348,18 @@ def create_parser() -> argparse.ArgumentParser:
         default=None,
         help="Which bases to analyze (default: all)"
     )
+
+    # Analysis options
+    parser.add_argument(
+        "--skip-K-sectors",
+        action="store_true",
+        help="Disable sector-based analysis"
+    )
+    parser.add_argument(
+        "--skip-K-states",
+        action="store_true",
+        help="Disable decoupled states-based analysis"
+    )
     
     # Output options
     parser.add_argument(
@@ -1285,6 +1447,8 @@ def main() -> None:
         run_orbital_optimization=not args.no_optimization,
         n_threads=args.n_threads,
         reuse_wavefunction=not args.no_reuse,
+        skip_K_sectors=args.skip_K_sectors,
+        skip_K_states=args.skip_K_states,
         output_dir=Path(args.output_dir) if args.output_dir else None,
         plots_dir=Path(args.plots_dir) if args.plots_dir else None,
         wavefunction_dir=args.wavefunction_dir,
@@ -1298,7 +1462,7 @@ def main() -> None:
     
     logger.info(f"Starting computation for {args.molecule} in {args.basis_set} basis set")
     logger.info(f"Configuration: molecule={config.molecule}, basis set={config.basis_set}, "
-                f"bond_length={config.bond_length}, max_transfers={config.max_elec_transfers}")
+                f"bond_length={config.bond_length}, max_transfers={config.max_elec_transfers}, cost function type={config.type_cost_function}")
     
     # Run computation
     try:
@@ -1318,7 +1482,9 @@ def main() -> None:
                     plots_dir, 
                     max_elec=max_elec, 
                     show=config.show_plots, 
-                    save=True
+                    save=True,
+                    skip_K_sectors=config.skip_K_sectors,
+                    skip_K_states=config.skip_K_states
                 )
 
         logger.info("Computation completed successfully!")
