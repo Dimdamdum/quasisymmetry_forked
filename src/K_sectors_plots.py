@@ -123,29 +123,32 @@ def get_K_sectors_values_energies(psi, h_linop, ref_energy, sectors, max_elec_tr
                 print(f"--> Chemical accuracy not reached.")
     return K_sectors_values, K_sectors_energies, retained_dim, chem_accuracy_reached
 
+# def get_K_states_values_energies(psi, h_linop, ref_energy, sectors, max_elec_transfers, projected_or_lowest, max_K_sectors=inf, verbose=0):
+
 # =============================================================================
 # Plotting functions - see below for version where data is read from .json
 # =============================================================================
 
-def plot_energy_vs_K_sectors(
+def plot_energy_vs_K(
     data_label_list,
-    K_sectors_values_list,
-    K_sectors_energies_list,
+    K_lists,
+    energies_lists,
     ref_energy,
     molecule='...',
     basis_set='...',
     norb='...',
     cluster_sizes='...',
     max_elec_transfers='...',
-    cost='...'
+    cost='...',
+    sectors_or_states='...'
 ):
     """
-    Plot energy vs number of retained sectors.
+    Plot energy vs list of integers K_list (either K_sectors_values_list or K_states_values_list).
     
     Args:
         data_label_list: List of data labels
-        K_sectors_values_list: List of K sectors values for each basis
-        K_sectors_energies_list: List of K sectors energies for each basis
+        K_lists: List of lists of K values
+        energies_lists: List of lists of energies
         ref_energy: Reference energy
         molecule: Molecule name (for title)
         basis: Basis set of molecule object (for title)
@@ -153,17 +156,18 @@ def plot_energy_vs_K_sectors(
         cluster_sizes: Cluster sizes (for title)
         max_elec_transfers: Maximum electron transfers (for title)
         cost: Cost type (for title)
+        sectors_or_states: 'sectors' or 'states'
     """
     plt.figure(figsize=(8, 5))
     num_curves = len(data_label_list)
-    assert num_curves == len(K_sectors_values_list)
-    assert num_curves == len(K_sectors_energies_list)
+    assert num_curves == len(K_lists)
+    assert num_curves == len(energies_lists)
     for i in range(num_curves):
-        plt.plot(K_sectors_values_list[i], [e - ref_energy for e in K_sectors_energies_list[i]], 'o-', label=data_label_list[i])
+        plt.plot(K_lists[i], [e - ref_energy for e in energies_lists[i]], 'o-', label=data_label_list[i])
     plt.axhline(CHEMICAL_PRECISION, color='r', linestyle='--', label='Chemical accuracy')
-    plt.xlabel('Number of retained sectors')
+    plt.xlabel('Number of retained '+sectors_or_states)
     plt.ylabel('$E - E_{ref}$ (Ha)')
-    plt.title(f'Energy against number of sectors for {molecule} in {basis_set} basis \n Num. orbitals = {norb}, cluster sizes = {cluster_sizes} + ghost, max $e^-$ transfers = {max_elec_transfers}, cost = {cost}')
+    plt.title('Energy against number of '+sectors_or_states+f' for {molecule} in {basis_set} basis \n Num. orbitals = {norb}, cluster sizes = {cluster_sizes} + ghost, max $e^-$ transfers = {max_elec_transfers}, cost = {cost}')
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.yscale('log')

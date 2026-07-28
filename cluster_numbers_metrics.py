@@ -10,8 +10,8 @@ and analyzes symmetry sectors to evaluate the quality of cluster decompositions.
 See notebook cluster_numbers_search (same implementation, clearer structure).
 
 Usage:
-    python cluster_numbers_metrics.py h4_square 6-31g 1.0 --max-transfers 2
-    python cluster_numbers_metrics.py h2o 6-31g 1.0 --bond-angle 104.5 --max-transfers 2 --bases MOs "Opt. from MOs" "NatOs" "Opt. from NatOs"
+    python cluster_numbers_metrics.py h4_square 6-31g 1.0 --max-transfers 1 2
+    python cluster_numbers_metrics.py h2o 6-31g 1.0 --bond-angle 104.5 --max-transfers 1 2 3 --bases MOs "Opt. from MOs" "NatOs" "Opt. from NatOs"
 """
 
 """"
@@ -36,7 +36,7 @@ bond_length: Bond length in Angstrom
 cost_function: Cost function type (variance, eval_eq, mixed, extremality, commutator)
 Optional: 
 --bond-angle: Bond angle in degrees (for H2O, default: None)
---max-transfers: Maximum electron transfers (default: 2) 
+--max-transfers: Maximum electron transfers (default: [1 2 3]) 
 --cluster-matrix: Custom cluster matrix as JSON array or path to file
 --bond-dim: DMRG bond dimension (default: 500) 
 --n-sweeps: Number of DMRG sweeps (default: 50)
@@ -46,7 +46,7 @@ Optional:
 --bases: Which orbital bases to analyze (default: all 5 - MOs, optimized from MOs, NatOs, optimized from NatOs, random)
 --output-dir: Custom output directory 
 --plots-dir: Custom plots directory
---wavefunction-dir: Custom wavefunction directory
+--wavefunction-dir: Wavefunction directory for input and output
 --no-plots: Disable plot generation 
 --show-plots: Display plots interactively
 --n-threads: Number of threads (default: 1)
@@ -103,7 +103,7 @@ from src.dmrg_solver import Block2DMRGSolver, DMRGConfig, solve_or_load_ground_s
 from src.K_sectors_plots import (
     get_K_sectors_values_energies,
     plot_dual_bar_chart,
-    plot_energy_vs_K_sectors,
+    plot_energy_vs_K,
 )
 from src.orbital_rotation import params_to_U
 
@@ -116,10 +116,9 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class BasisResult:
-    """Results for a single orbital basis (e.g., MOs, NatOs, optimized from MOs) analysis."""
-
-    data_label: str
+class SingleMaxelectransferResult:
+    """Results for a specific max_elec_transfers value."""
+    max_elec_transfers: int
     K_sectors_values: list[int]
     K_sectors_energies: list[float]
     num_retained_sectors: int
@@ -128,11 +127,19 @@ class BasisResult:
 
 
 @dataclass
+class BasisResult:
+    """Results for a single orbital basis analysis; one SingleMaxelectransferResult multiple max_elec_transfers values."""
+
+    data_label: str
+    transfer_results: list[SingleMaxelectransferResult]
+
+
+@dataclass
 class MetricsOutput:
     """Complete output containing metadata and results for all bases. One .json output file produced by this script containes one instance of this class."""
 
     metadata: dict[str, Any]
-    basis_results: list[BasisResult] = field(default_factory=list)
+    basis_results: list[BasisResult] = field(default_factory=list) # one BasisResult per basis
 
 
 @dataclass
@@ -146,7 +153,7 @@ class MetricsConfig:
     type_cost_function: str
     bond_angle: float | None = None
     cluster_matrix: np.ndarray | None = None
-    max_elec_transfers: int = 2
+    max_elec_transfers: list[int] = field(default_factory=lambda: [1, 2, 3])
 
     # DMRG parameters
     bond_dim: int = 500
@@ -189,8 +196,6 @@ class MetricsConfig:
                 f"Unsupported cost function: {self.type_cost_function}. "
                 "Supported: variance, eval_eq, extremality, mixed, commutator"
             )
-        if self.max_elec_transfers < 0:
-            raise ValueError("max_elec_transfers must be >= 0")
 
 
 # =============================================================================
@@ -288,37 +293,42 @@ def validate_cluster_matrix(cluster_matrix: np.ndarray, norb: int) -> None:
         raise ValueError("Error: There is one or more empty clusters.")
 
 
-def create_output_dirs(config: MetricsConfig) -> tuple[Path, Path]:
-    """Create output and plots directories based on configuration."""
+def create_output_dirs(config: MetricsConfig) -> dict[int, tuple[Path, Path]]:
+    """Create individual output and plots directories for each max electron transfer value."""
     molecule = config.molecule.lower()
     basis_set = config.basis_set.lower()
     bond_length_str = f"{config.bond_length:.4f}".replace(".", "_")
     
-    # Build output directory path
-    if config.output_dir is not None:
-        output_dir = config.output_dir
-    else:
-        output_dir = Path("outputs_") / "cluster_number" / molecule / basis_set / f"bond_{bond_length_str}"
-        if config.bond_angle is not None:
-            angle_str = f"{config.bond_angle:.4f}".replace(".", "_")
-            output_dir = output_dir / f"angle_{angle_str}"
-        output_dir = output_dir / f"max_transfers_{config.max_elec_transfers}"
+    directories = {}
     
-    # Build plots directory path
-    if config.plots_dir is not None:
-        plots_dir = config.plots_dir
-    else:
-        plots_dir = Path("plots") / "cluster_number" / molecule / basis_set / f"bond_{bond_length_str}"
-        if config.bond_angle is not None:
-            angle_str = f"{config.bond_angle:.4f}".replace(".", "_")
-            plots_dir = plots_dir / f"angle_{angle_str}"
-        plots_dir = plots_dir / f"max_transfers_{config.max_elec_transfers}"
-    
-    # Create directories
-    output_dir.mkdir(parents=True, exist_ok=True)
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    
-    return output_dir, plots_dir
+    for max_elec in config.max_elec_transfers:
+        # Build output directory path
+        if config.output_dir is not None:
+            output_dir = config.output_dir / f"max_transfers_{max_elec}"
+        else:
+            output_dir = Path("outputs_") / "cluster_number" / molecule / basis_set / f"bond_{bond_length_str}"
+            if config.bond_angle is not None:
+                angle_str = f"{config.bond_angle:.4f}".replace(".", "_")
+                output_dir = output_dir / f"angle_{angle_str}"
+            output_dir = output_dir / f"max_transfers_{max_elec}"
+        
+        # Build plots directory path
+        if config.plots_dir is not None:
+            plots_dir = config.plots_dir / f"max_transfers_{max_elec}"
+        else:
+            plots_dir = Path("plots") / "cluster_number" / molecule / basis_set / f"bond_{bond_length_str}"
+            if config.bond_angle is not None:
+                angle_str = f"{config.bond_angle:.4f}".replace(".", "_")
+                plots_dir = plots_dir / f"angle_{angle_str}"
+            plots_dir = plots_dir / f"max_transfers_{max_elec}"
+        
+        # Create directories
+        output_dir.mkdir(parents=True, exist_ok=True)
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        
+        directories[max_elec] = (output_dir, plots_dir)
+        
+    return directories
 
 
 def get_timestamp() -> str:
@@ -702,7 +712,7 @@ def compute_sector_analysis(
     )
     
     logger.info(f"Number of symmetry sectors identified: {len(sectors)}")
-    logger.info(f"Max electron transfers across clusters: {config.max_elec_transfers}")
+    logger.info(f"Max electron transfers across clusters (list): {config.max_elec_transfers}")
     
     # Compute K_sectors for each basis
     for i in range(len(U_list)):
@@ -712,33 +722,45 @@ def compute_sector_analysis(
         
         logger.info(f"Analyzing basis: {data_label}")
         
-        K_sectors_values, K_sectors_energies, retained_dim, chem_accuracy_reached = (
-            get_K_sectors_values_energies(
-                psi, 
-                h_linop, 
-                dmrg_energy, 
-                sectors, 
-                config.max_elec_transfers, 
-                "projected",
-                max_K_sectors=inf,
-                verbose=0
-            )
-        )
+        transfer_results = []
         
+        # Loop through each max_elec limit specified in the configuration
+        for max_elec in config.max_elec_transfers:
+            K_sectors_values, K_sectors_energies, retained_dim, chem_accuracy_reached = (
+                get_K_sectors_values_energies(
+                    psi, 
+                    h_linop, 
+                    dmrg_energy, 
+                    sectors, 
+                    max_elec,  # Use the specific integer here
+                    "projected",
+                    max_K_sectors=inf,
+                    verbose=0
+                )
+            )
+            
+            # Store data for this specific electron transfer limit
+            transfer_result = SingleMaxelectransferResult(
+                max_elec_transfers=max_elec,
+                K_sectors_values=K_sectors_values,
+                K_sectors_energies=K_sectors_energies,
+                num_retained_sectors=len(K_sectors_values),
+                retained_dim=retained_dim,
+                chem_accuracy_reached=chem_accuracy_reached
+            )
+            transfer_results.append(transfer_result)
+            
+            logger.info(
+                f"  max_elec={max_elec}: {len(K_sectors_values)} sectors, "
+                f"dim={retained_dim}, chem_accuracy={chem_accuracy_reached}"
+            )
+        
+        # Package all transfer limit results into the final BasisResult
         basis_result = BasisResult(
             data_label=data_label,
-            K_sectors_values=K_sectors_values,
-            K_sectors_energies=K_sectors_energies,
-            num_retained_sectors=len(K_sectors_values),
-            retained_dim=retained_dim,
-            chem_accuracy_reached=chem_accuracy_reached
+            transfer_results=transfer_results
         )
         basis_results.append(basis_result)
-        
-        logger.info(
-            f"  {data_label}: {len(K_sectors_values)} sectors, "
-            f"dim={retained_dim}, chem_accuracy={chem_accuracy_reached}"
-        )
     
     return basis_results
 
@@ -762,7 +784,7 @@ def compute_cluster_number_metrics(config: MetricsConfig) -> MetricsOutput:
     cluster_matrix = get_cluster_matrix_from_config(config)
     
     # Create output directories
-    output_dir, plots_dir = create_output_dirs(config)
+    directories = create_output_dirs(config) # couples (output_dir, plots_dir) - one per max_elec_transfers value
     
     # Build metadata
     metadata = {
@@ -863,9 +885,9 @@ def compute_cluster_number_metrics(config: MetricsConfig) -> MetricsOutput:
     return output
 
 
-def save_metrics(output: MetricsOutput, output_dir: Path) -> Path:
+def save_metrics(output: MetricsOutput, output_dir: Path, max_elec: int) -> Path:
     """
-    Save metrics to JSON file.
+    Save metrics to JSON file for a specific max electron transfer limit.
     
     Returns:
         Path to the saved file
@@ -873,15 +895,38 @@ def save_metrics(output: MetricsOutput, output_dir: Path) -> Path:
     timestamp = output.metadata.get("timestamp", get_timestamp())
     git_hash = output.metadata.get("git_hash", "unknown")
     
-    filename = f"results_"+output.metadata["cost"]+f"_{timestamp}_{git_hash}.json"
+    filename = f"results_{output.metadata['cost']}_{timestamp}_{git_hash}.json"
     filepath = output_dir / filename
     
+    # Filter basis_results to only include the specified max_elec
+    filtered_basis_results = []
+    for result in output.basis_results:
+        # Extract the specific transfer result from the list
+        transfer_result = next(
+            (tr for tr in result.transfer_results if tr.max_elec_transfers == max_elec), 
+            None
+        )
+        
+        if transfer_result:
+            filtered_basis_results.append({
+                "data_label": result.data_label,
+                "transfer_results": [asdict(transfer_result)]
+            })
+        else:
+            # Fallback if no matching result is found for this basis
+            filtered_basis_results.append({
+                "data_label": result.data_label,
+                "transfer_results": []
+            })
+    
+    # Update the max_elec_transfers in metadata to reflect this specific file's limit
+    metadata_copy = output.metadata.copy()
+    metadata_copy["max_elec_transfers"] = max_elec
+
     # Convert to dict for serialization
     output_dict = {
-        "metadata": output.metadata,
-        "basis_results": [
-            asdict(result) for result in output.basis_results
-        ]
+        "metadata": metadata_copy,
+        "basis_results": filtered_basis_results
     }
     
     with open(filepath, "w") as f:
@@ -896,9 +941,18 @@ def load_metrics(filepath: Path) -> MetricsOutput:
     with open(filepath, "r") as f:
         data = json.load(f)
     
-    basis_results = [
-        BasisResult(**result_dict) for result_dict in data["basis_results"]
-    ]
+    basis_results = []
+    for result_dict in data["basis_results"]:
+        # Reconstruct the SingleMaxelectransferResult objects
+        transfer_results = [
+            SingleMaxelectransferResult(**tr) 
+            for tr in result_dict.get("transfer_results", [])
+        ]
+        
+        basis_results.append(BasisResult(
+            data_label=result_dict["data_label"],
+            transfer_results=transfer_results
+        ))
     
     return MetricsOutput(
         metadata=data["metadata"],
@@ -909,10 +963,11 @@ def load_metrics(filepath: Path) -> MetricsOutput:
 def generate_plots(
     output: MetricsOutput,
     plots_dir: Path,
+    max_elec: int,
     show: bool = False,
     save: bool = True
 ) -> None:
-    """Generate and save plots from metrics output."""
+    """Generate and save plots from metrics output for a specific max electron transfer limit."""
     import matplotlib
     if not save:
         matplotlib.use("Agg")  # Use non-interactive backend if not saving
@@ -921,19 +976,37 @@ def generate_plots(
     metadata = output.metadata
     basis_results = output.basis_results
     
-    # Prepare data for plotting
-    data_label_list = [r.data_label for r in basis_results]
-    K_sectors_values_list = [r.K_sectors_values for r in basis_results]
-    K_sectors_energies_list = [r.K_sectors_energies for r in basis_results]
-    num_retained_sectors_list = [r.num_retained_sectors for r in basis_results]
-    retained_dim_list = [r.retained_dim for r in basis_results]
+    # Prepare data for plotting by filtering for max_elec
+    data_label_list = []
+    K_sectors_values_list = []
+    K_sectors_energies_list = []
+    num_retained_sectors_list = []
+    retained_dim_list = []
+    chem_accuracy_reached_list = []
     
+    for r in basis_results:
+        tr = next((t for t in r.transfer_results if t.max_elec_transfers == max_elec), None)
+        if tr is None:
+            continue
+            
+        data_label_list.append(r.data_label)
+        K_sectors_values_list.append(tr.K_sectors_values)
+        K_sectors_energies_list.append(tr.K_sectors_energies)
+        num_retained_sectors_list.append(tr.num_retained_sectors)
+        retained_dim_list.append(tr.retained_dim)
+        chem_accuracy_reached_list.append(tr.chem_accuracy_reached)
+    
+    # Guard clause in case there's no data matching the max_elec
+    if not data_label_list:
+        logger.warning(f"No data found for max_elec={max_elec}. Skipping plots.")
+        return
+
     # Generate timestamp for filename
     timestamp = metadata.get("timestamp", get_timestamp())
     
     # Plot 1: Energy vs K_sectors
     if save:
-        plot_energy_vs_K_sectors(
+        plot_energy_vs_K(
             data_label_list,
             K_sectors_values_list,
             K_sectors_energies_list,
@@ -942,11 +1015,12 @@ def generate_plots(
             basis_set=metadata["basis_set"],
             norb=metadata.get("norb", "?"),
             cluster_sizes=metadata.get("cluster_sizes", "?"),
-            max_elec_transfers=metadata["max_elec_transfers"],
-            cost=metadata["cost"]
+            max_elec_transfers=max_elec,  # pass the specific integer here
+            cost=metadata["cost"],
+            sectors_or_states='sectors'
         )
         
-        filename = f"energy_vs_sectors_"+metadata["cost"]+f"_{timestamp}.png"
+        filename = f"energy_vs_sectors_{metadata['cost']}_{timestamp}.png"
         filepath = plots_dir / filename
         plt.savefig(filepath, dpi=300, bbox_inches="tight")
         logger.info(f"Energy vs sectors plot saved to {filepath}")
@@ -956,19 +1030,15 @@ def generate_plots(
         plt.close()
     
     # Plot 2: Dual bar chart
-    chem_accuracy_reached_list = [result.chem_accuracy_reached for result in output.basis_results]
     if not any(chem_accuracy_reached_list):
-        print("No basis reached chemical accuracy. Skipping 2nd plot (dual bar chart).")
+        print(f"No basis reached chemical accuracy for max_elec={max_elec}. Skipping 2nd plot (dual bar chart).")
     else:
         # Prepare data for dual bar chart
-        x_data = data_label_list
-        y1_data = num_retained_sectors_list
-        y2_data = retained_dim_list
-        colors = [f'C{i}' for i in range(len(output.basis_results))]
+        colors = [f'C{i}' for i in range(len(data_label_list))]
         colors_cp = list(compress(colors, chem_accuracy_reached_list))
-        x_data_cp = list(compress(x_data, chem_accuracy_reached_list))
-        y1_data_cp = list(compress(y1_data, chem_accuracy_reached_list))
-        y2_data_cp = list(compress(y2_data, chem_accuracy_reached_list))
+        x_data_cp = list(compress(data_label_list, chem_accuracy_reached_list))
+        y1_data_cp = list(compress(num_retained_sectors_list, chem_accuracy_reached_list))
+        y2_data_cp = list(compress(retained_dim_list, chem_accuracy_reached_list))
 
         if save:
             plt.figure(figsize=(8, 5))
@@ -976,7 +1046,7 @@ def generate_plots(
             title = (
                 f"Sector analysis for {metadata['molecule']} in {metadata['basis_set']} basis set \n "
                 f"Num. orbitals = {metadata.get('norb', '?')}, cluster sizes = {metadata.get('cluster_sizes', '?')}, "
-                f"max $e^-$ transfers = {metadata['max_elec_transfers']}, cost = {metadata['cost']}"
+                f"max $e^-$ transfers = {max_elec}, cost = {metadata['cost']}"
             )
 
             plot_dual_bar_chart(
@@ -990,7 +1060,7 @@ def generate_plots(
                 alpha=(0.8, 0.4)
             )
             
-            filename = f"retained_sectors_bar_chart_"+metadata["cost"]+f"_{timestamp}.png"
+            filename = f"retained_sectors_bar_chart_{metadata['cost']}_{timestamp}.png"
             filepath = plots_dir / filename
             plt.savefig(filepath, dpi=300, bbox_inches="tight")
             logger.info(f"Retained sectors bar chart saved to {filepath}")
@@ -1074,10 +1144,11 @@ def create_parser() -> argparse.ArgumentParser:
         help="Bond angle in degrees (for H2O)"
     )
     parser.add_argument(
-        "--max-transfers",
-        type=int,
-        default=2,
-        help="Maximum electron transfers (default: 2)"
+    "--max-transfers",
+    type=int,
+    nargs="+",
+    default=[1, 2, 3],
+    help="Maximum electron transfers (default: 1 2 3)",
     )
     parser.add_argument(
         "--cluster-matrix",
@@ -1145,7 +1216,7 @@ def create_parser() -> argparse.ArgumentParser:
         '--wavefunction-dir',
         type=str,
         default='wavefunctions',
-        help='Directory to store temporary DMRG wavefunction files'
+        help='MPS wavefunction directory (for input and output)'
     )
     parser.add_argument(
         "--no-plots",
@@ -1233,14 +1304,23 @@ def main() -> None:
     try:
         output = compute_cluster_number_metrics(config)
         
-        # Save results
-        output_dir, plots_dir = create_output_dirs(config)
-        filepath = save_metrics(output, output_dir)
+        # create_output_dirs now returns a dictionary mapping max_elec -> (output_dir, plots_dir)
+        directories_by_transfer = create_output_dirs(config)
         
-        # Generate plots if enabled
-        if config.save_plots:
-            generate_plots(output, plots_dir, show=config.show_plots, save=True)
-        
+        for max_elec, (output_dir, plots_dir) in directories_by_transfer.items():
+            # Pass max_elec to save_metrics so it can extract the correct SingleMaxelectransferResult
+            filepath = save_metrics(output, output_dir, max_elec=max_elec)
+            
+            # Generate plots if enabled
+            if config.save_plots:
+                generate_plots(
+                    output, 
+                    plots_dir, 
+                    max_elec=max_elec, 
+                    show=config.show_plots, 
+                    save=True
+                )
+
         logger.info("Computation completed successfully!")
         logger.info(f"Results saved to: {filepath}")
         
