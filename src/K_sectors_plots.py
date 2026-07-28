@@ -10,7 +10,6 @@ from typing import Any
 from dataclasses import dataclass, field, asdict
 import json
 import glob
-from src.sector_utils import subspace_matrix
 
 # This file is piecewise AI-written and human-verified
 
@@ -141,25 +140,6 @@ def get_K_sectors_values_energies(psi, h_linop, ref_energy, sectors, max_elec_tr
                 print(f"--> Chemical accuracy not reached.")
     return K_sectors_values, K_sectors_energies, K_sectors_retained_dimensions, chem_accuracy_reached
 
-# copy-pasted from metrics to avoid chain of import issues requiring quasisymmetries external import
-def orthogonalize_degenerate(w, V, tol=1e-10):
-    """Eigensolvers sometimes return non-orthogonal eigenvectors if they have
-    degenerate eigenvalues. This function rectifies that."""
-    V_orth = V.copy()
-
-    start = 0
-    while start < len(w):
-        end = start + 1
-        while end < len(w) and abs(w[end] - w[start]) < tol:
-            end += 1
-
-        # Orthogonalize this degenerate block
-        Q, _ = scipy.linalg.qr(V[:, start:end], mode="economic")
-        V_orth[:, start:end] = Q
-
-        start = end
-    return V_orth
-
 def projected_energy_few_states(retained_states_indices, psi, h_linop, ordered_decoupled_states):
     """Compute energy using only the states with indices in retained_states_indices"""
     
@@ -192,60 +172,10 @@ def energy_few_states(retained_states_indices, psi, h_linop, ordered_decoupled_s
         return projected_energy_few_states(retained_states_indices, psi, h_linop, ordered_decoupled_states)
 
 
-def get_K_states_values_energies(psi, h_linop, ref_energy, sectors, max_elec_transfers, projected_or_lowest, max_K_states=inf, verbose=0):
+def get_K_states_values_energies(psi, h_linop, ref_energy, ordered_decoupled_states, max_elec_transfers, projected_or_lowest, max_K_states=inf, verbose=0):
 
-    assert np.isclose(ref_energy, np.vdot(psi, h_linop @ psi).real, atol=1e-10)
-    assert np.isclose(0, np.vdot(psi, h_linop @ psi).imag, atol=1e-10)
     assert projected_or_lowest == 'projected', "For now only projected_or_lowest='projected' is supported"
 
-    # Step 1: Build subspace Hamiltonians
-    sector_hamiltonians = {}
-    for sector_label, sector_indices in sectors.items():
-        sector_hamiltonians[sector_label] = subspace_matrix(
-        h_linop, sector_indices)
-
-    # Step 2: Diagonalize each sector
-    sector_energies = {}
-    sector_states = {}
-    for label, h_sub in sector_hamiltonians.items():
-        # Get all eigenvalues (full diagonalization for small systems)
-        w, v = np.linalg.eigh(h_sub)
-        v_orth = orthogonalize_degenerate(w, v)
-        sector_energies[label] = w
-        sector_states[label] = v_orth
-
-    # Step 3: Find the global ground state in decoupled sectors
-    # Each sector has its own ground state. The true ground state is the minimum.
-    sector_ground_energies = {label: energies[0] for label, energies in sector_energies.items()}
-    global_min_sector = min(sector_ground_energies, key=sector_ground_energies.get)
-    e_decoupled = sector_ground_energies[global_min_sector]
-
-    # Step 4: Construct full-space basis from sector states
-    # usage: decoupled_states[i] = tuple(full space decoupled eigenvector phi_i containing many zeros, tuple of symmetry eigenvalues, <phi_i|psi>) = (decoupled state, sector label, overlap with psi) 
-
-    decoupled_states = []
-    for label, indices in sectors.items():
-        # Get the states for this sector
-        v_sector = sector_states[label]
-        n_states = v_sector.shape[1] # [0] would be the dummy parity label
-
-        # Create full-space vectors (zeros everywhere except in this sector)
-        vectors_in_sector = np.zeros((h_linop.shape[0], n_states),
-                                    dtype='complex') # full dim * sector dim
-        vectors_in_sector[indices, :] = v_sector # each column (!) is a decoupled eigenstate
-
-        # Track which sector each state belongs to, and coeff <phi_i|psi> of psi on it
-        vectors_in_sector_with_labels = [
-        (vectors_in_sector[:, i], label, np.vdot(vectors_in_sector[:, i], psi)) 
-        for i in range(n_states)
-    ]
-        
-        decoupled_states.extend(vectors_in_sector_with_labels)
-
-    # Step 5: Order the decoupled basis pf phi_i's for decreasing |<phi_i|psi>|
-    ordered_decoupled_states = sorted(decoupled_states, key=lambda x: np.abs(x[2]), reverse=True)
-
-    # Step 6: Set output up and temp objects
     K_states_values = []
     K_states_energies = []
     K_states_num_retained_state_sectors = []

@@ -27,10 +27,16 @@ minbondlength=0.8; maxbondlength=2.9; steps=8
 bondlengths=($(seq $minbondlength $(awk "BEGIN {print ($maxbondlength - $minbondlength) / ($steps - 1)}") $maxbondlength))
 b=${bondlengths[$SLURM_ARRAY_TASK_ID]}
 
-python cluster_numbers_metrics.py n2 sto3g $b "variance" \
-    --cluster-matrix '[[1,1,1,0,0,0,0,0,0,0],[0,0,0,1,1,1,0,0,0,0],[0,0,0,0,0,0,1,1,0,0]]' \
-    --max-transfers 1 2 3 4 5 6
+#!/bin/bash
 
-python cluster_numbers_metrics.py n2 sto3g $b "commutator" \
-    --cluster-matrix '[[1,1,1,0,0,0,0,0,0,0],[0,0,0,1,1,1,0,0,0,0],[0,0,0,0,0,0,1,1,0,0]]' \
-    --max-transfers 1 2 3 4 5 6
+molecule="$1"
+basis="$2"
+angle="$3"
+matrix="$4"
+
+for metric in "variance" "commutator"; do
+    python cluster_numbers_metrics.py "$molecule" "$basis" "$b" "$metric" \
+        --bond-angle "$angle" \
+        --cluster-matrix "$matrix" \
+        --max-transfers 1 2 3 4 5 6
+done

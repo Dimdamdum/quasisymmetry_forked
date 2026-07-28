@@ -40,7 +40,10 @@ b=${bondlengths[$SLURM_ARRAY_TASK_ID]}
 #    --n-sweeps 10
 
 python cluster_numbers_metrics.py h2o sto3g $b "variance" \
-    --cluster-matrix '[[1,1,0,0,0,0,0],[0,0,1,1,0,0,0]]' \
+    --cluster-matrix '[
+    [1,1,0,0,0,0,0],
+    [0,0,1,1,0,0,0]
+    ]' \
     --max-transfers 1 2 \
     --bond-angle 104.5 \
     --bond-dim 50 \
