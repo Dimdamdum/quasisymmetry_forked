@@ -6,7 +6,7 @@
 #SBATCH --array=0-7
 #SBATCH --partition cluster
 #SBATCH --cpus-per-task=1  # Give it a few cores if DMRG needs them
-#SBATCH --mem=32G # 32 GB for medium cost DMRG or if 3- and 4-rdms are needed
+#SBATCH --mem=64G # 32 GB for medium cost DMRG or if 3- and 4-rdms are needed
 
 # # # block2-related fixes: start # # #
 # 1. Prevent thread oversubscription / hangs when using 1 CPU core
