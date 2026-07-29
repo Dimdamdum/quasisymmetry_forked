@@ -433,3 +433,208 @@ def load_aggregate_metrics_files(directory: str | Path, pattern: str = "results_
     
     return metrics_list
 
+# AI implemented
+def generate_plots_across_bond_lengths(input_dir, output_dir, angle_in_title=False):
+    """
+    Walk input_dir (bond_*/angle_*/max_transfers_*/*.json), and for every
+    (bond_angle, max_elec_transfers, molecule, basis_set, cost, cluster_matrix)
+    group, produce 4 PNG plots (one per y-metric) with bond_length on the
+    x-axis and one curve per data_label.
+
+    Output tree: output_dir/<angle_dir>/<max_transfers_dir>/*.png
+    (bond_length is dropped as a directory level since it becomes the x-axis
+    of the plots themselves -- see notes below the code).
+    """
+    import os, glob, json, hashlib, re
+    from datetime import datetime
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    if isinstance(angle_in_title, str):
+        angle_in_title = angle_in_title.strip().lower() in ("true", "1", "yes")
+
+    # (json key, y-axis label, boolean convergence-flag key)
+    Y_METRICS = [
+        ("num_retained_sectors", "K sectors mode: num. retained sectors", "chem_accuracy_reached_sectors"),
+        ("retained_dim", "K sectors mode: cumulative retained dim.", "chem_accuracy_reached_sectors"),
+        ("num_retained_states", "K states mode: num. retained states", "chem_accuracy_reached_states"),
+        ("num_retained_state_sectors", "K states mode: num. retained sectors", "chem_accuracy_reached_states"),
+    ]
+
+    def sanitize(s):
+        return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(s))
+
+    def matrix_key(matrix):
+        return tuple(tuple(row) for row in matrix)
+
+    def matrix_hash(matrix):
+        return hashlib.md5(json.dumps(matrix, sort_keys=False).encode()).hexdigest()[:8]
+
+    def cluster_sizes(matrix):
+        return tuple(sum(row) for row in matrix)
+
+    json_paths = sorted(glob.glob(
+        os.path.join(input_dir, "bond_*", "angle_*", "max_transfers_*", "*.json")
+    ))
+    if not json_paths:
+        print(f"No JSON files found under {input_dir} "
+              f"matching bond_*/angle_*/max_transfers_*/*.json")
+        return
+
+    # groups[(angle_dir, mt_dir)][(molecule, basis_set, cost, cluster_key, max_elec_transfers)]
+    #   = {"bond_angle":..., "cluster_matrix":..., "curves": {data_label: [record, ...]}}
+    groups = {}
+
+    for jp in json_paths:
+        mt_dir = os.path.basename(os.path.dirname(jp))
+        angle_dir = os.path.basename(os.path.dirname(os.path.dirname(jp)))
+
+        try:
+            with open(jp) as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"Skipping unreadable/invalid JSON {jp}: {e}")
+            continue
+
+        meta = data.get("metadata", {})
+        molecule = meta.get("molecule")
+        basis_set = meta.get("basis_set")
+        bond_length = meta.get("bond_length")
+        bond_angle = meta.get("bond_angle")
+        cost = meta.get("cost")
+        cluster_matrix = meta.get("cluster_matrix")
+
+        if any(v is None for v in (molecule, basis_set, bond_length, bond_angle, cost, cluster_matrix)):
+            print(f"Skipping {jp}: missing required metadata field(s).")
+            continue
+
+        ck = matrix_key(cluster_matrix)
+        tree_key = (angle_dir, mt_dir)
+        groups.setdefault(tree_key, {})
+
+        for basis_result in data.get("basis_results", []):
+            data_label = basis_result.get("data_label", "unknown")
+            for tr in basis_result.get("transfer_results", []):
+                max_elec_transfers = tr.get("max_elec_transfers")
+                sub_key = (molecule, basis_set, cost, ck, max_elec_transfers)
+                bucket = groups[tree_key].setdefault(sub_key, {
+                    "bond_angle": bond_angle,
+                    "cluster_matrix": cluster_matrix,
+                    "curves": {},
+                })
+                record = {
+                    "bond_length": bond_length,
+                    "num_retained_sectors": tr.get("num_retained_sectors"),
+                    "retained_dim": tr.get("retained_dim"),
+                    "chem_accuracy_reached_sectors": tr.get("chem_accuracy_reached_sectors", False),
+                    "num_retained_states": tr.get("num_retained_states"),
+                    "num_retained_state_sectors": tr.get("num_retained_state_sectors"),
+                    "chem_accuracy_reached_states": tr.get("chem_accuracy_reached_states", False),
+                }
+                bucket["curves"].setdefault(data_label, []).append(record)
+
+    n_plots = 0
+    for (angle_dir, mt_dir), subgroups in groups.items():
+        out_subdir = os.path.join(output_dir, angle_dir, mt_dir)
+        os.makedirs(out_subdir, exist_ok=True)
+
+        for (molecule, basis_set, cost, ck, max_elec_transfers), info in subgroups.items():
+            curves = info["curves"]
+            bond_angle = info["bond_angle"]
+            cmatrix = info["cluster_matrix"]
+            h = matrix_hash(cmatrix)
+            sizes = cluster_sizes(cmatrix)
+
+            for metric_key, metric_label, converge_key in Y_METRICS:
+                fig, ax = plt.subplots(figsize=(8, 6))
+
+                colors = {}
+                color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
+                color_cycle = list(color_cycle)  # make it mutable
+
+                label_order = list(curves.keys())  # preserves first-seen (JSON) order
+                for i, data_label in enumerate(label_order):
+                    colors[data_label] = color_cycle[i % len(color_cycle)]
+
+                any_data = False
+                nonconv_by_label = {}
+
+                for data_label in label_order:
+                    points = curves[data_label]
+                    conv_pts = sorted(
+                        (p["bond_length"], p[metric_key])
+                        for p in points
+                        if p.get(converge_key) and p.get(metric_key) is not None
+                    )
+                    nonconv_x = sorted(set(
+                        p["bond_length"] for p in points if not p.get(converge_key)
+                    ))
+                    if conv_pts:
+                        xs, ys = zip(*conv_pts)
+                        ax.plot(xs, ys, marker="o", label=data_label, color=colors[data_label])
+                        any_data = True
+                    if nonconv_x:
+                        nonconv_by_label[data_label] = nonconv_x
+
+                if not any_data and not nonconv_by_label:
+                    plt.close(fig)
+                    continue
+
+                ylim = ax.get_ylim() if any_data else (0, 1)
+                if not any_data:
+                    ax.set_ylim(*ylim)
+
+                any_nonconverged = False
+                for data_label, xs in nonconv_by_label.items():
+                    any_nonconverged = True
+                    color = colors.get(data_label, "gray")
+                    any_nonconverged = False
+                    n_labels = len(nonconv_by_label)
+                    y_range = ylim[1] - ylim[0]
+                    offset_step = 0.02 * y_range  # % of axis height per label
+                    for i, (data_label, xs) in enumerate(sorted(nonconv_by_label.items())):
+                        any_nonconverged = True
+                        color = colors.get(data_label, "gray")
+                        y_offset = ylim[0] + (i + 1) * offset_step
+                        ax.scatter(xs, [y_offset] * len(xs), marker="x", color=color, zorder=5, s=15)
+                if any_data:
+                    ax.set_ylim(*ylim)  # keep scale fixed after adding bottom markers
+
+                ax.set_xlabel("Bond length")
+                ax.set_ylabel(metric_label)
+                if angle_in_title == True:
+                    ax.set_title(
+                        f"{molecule} / {basis_set} / cost={cost}\n"
+                        f"bond angle = {bond_angle}, max. elec. transfers = {max_elec_transfers}\n"
+                        f"cluster sizes = {sizes} (cluster_matrix #{h})",
+                        fontsize=12.5,
+                    )
+                else:
+                    ax.set_title(
+                        f"{molecule} / {basis_set} / cost={cost}\n"
+                        f"max. elec. transfers = {max_elec_transfers}\n"
+                        f"cluster sizes = {sizes} (cluster_matrix #{h})",
+                        fontsize=12.5,
+                    )
+
+                handles, labels = ax.get_legend_handles_labels()
+                if any_nonconverged:
+                    proxy = Line2D([0], [0], marker="x", color="gray", linestyle="None")
+                    handles.append(proxy)
+                    labels.append("not converged (excluded)")
+                ax.legend(handles, labels, loc="upper right", fontsize=8)
+
+                fig.tight_layout()
+
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                fname = (
+                    f"{sanitize(molecule)}_{sanitize(basis_set)}_{sanitize(cost)}_"
+                    f"cm{h}_mt{sanitize(max_elec_transfers)}_{metric_key}_{timestamp}.png"
+                )
+                fig.savefig(os.path.join(out_subdir, fname), dpi=150)
+                plt.close(fig)
+                n_plots += 1
+
+    print(f"Generated {n_plots} plot(s) under {output_dir}")
