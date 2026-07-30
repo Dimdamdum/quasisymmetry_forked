@@ -10,8 +10,8 @@ and analyzes symmetry sectors to evaluate the quality of cluster decompositions.
 See notebook cluster_numbers_search (same implementation, clearer structure).
 
 Usage:
-    python cluster_numbers_metrics.py h4_square 6-31g 1.0 --max-transfers 1 2
-    python cluster_numbers_metrics.py h2o 6-31g 1.0 --bond-angle 104.5 --max-transfers 1 2 3 --bases MOs "Opt. from MOs" "NatOs" "Opt. from NatOs"
+    python cluster_numbers_metrics.py h4_linear sto3g 1.0 commutator 104.5 
+    python cluster_numbers_metrics.py h2o 6-31g 2.3 variance --bond-angle 104.5 --max-transfers 1 2 --skip-K-states --no-reuse
 """
 
 """"
@@ -38,7 +38,7 @@ Optional:
 --bond-angle: Bond angle in degrees (for H2O, default: None)
 --max-transfers: Maximum electron transfers (default: [1 2 3]) 
 --cluster-matrix: Custom cluster matrix as JSON array or path to file
---bond-dim: DMRG bond dimension (default: 500) 
+--bond-dim: DMRG bond dimension (default: 150) 
 --n-sweeps: Number of DMRG sweeps (default: 50)
 --var-exponent: Variance exponent (default: 1) 
 --maxiter: Maximum optimization iterations (default: 500)
@@ -175,7 +175,7 @@ class MetricsConfig:
     max_elec_transfers: list[int] = field(default_factory=lambda: [1, 2, 3])
 
     # DMRG parameters
-    bond_dim: int = 500
+    bond_dim: int = 150
     n_sweeps: int = 50
 
     # Orbital optimization parameters
@@ -1433,8 +1433,8 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bond-dim",
         type=int,
-        default=500,
-        help="DMRG bond dimension (default: 500)"
+        default=150,
+        help="DMRG bond dimension (default: 150)"
     )
     parser.add_argument(
         "--n-sweeps",
@@ -1606,7 +1606,9 @@ def main() -> None:
     logger.info(f"Starting computation for {args.molecule} in {args.basis_set} basis set")
     logger.info(f"Configuration: molecule={config.molecule}, basis set={config.basis_set}, "
                 f"bond_length={config.bond_length}, max_transfers={config.max_elec_transfers}, cost function type={config.type_cost_function}")
-    
+    if config.bond_angle is not None:
+        logger.info(f"Bond angle={config.bond_angle}")
+                    
     # Run computation
     try:
         output = compute_cluster_number_metrics(config)
