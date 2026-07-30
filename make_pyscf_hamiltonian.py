@@ -15,6 +15,8 @@ import argparse
 
 import matplotlib.pyplot as plt
 import pyscf
+import pyscf.mcscf
+import pyscf.tools
 from pyscf import lo
 
 from chemistry import get_geometry_and_description
@@ -45,6 +47,12 @@ if __name__ == "__main__":
             "Incompatible with --localized."
         ),
     )
+    parser.add_argument("--scf_maxiter", type=int, default=100,
+                        help="Number of iterations for the SCF solver.")
+    parser.add_argument("--active_space", nargs=2, type=int, default=None,
+                        help="Number of orbitals and electrons in the active space. "
+                             "If specified, saves an active-space FCIDUMP in addition to the"
+                             "full-space PySCF checkfile.")
 
     args = parser.parse_args()
 
@@ -68,15 +76,19 @@ if __name__ == "__main__":
     mol.build(atom=geometry, basis=args.basis)
 
     mf = pyscf.scf.RHF(mol)
+    mf.max_cycle = args.scf_maxiter
     if not args.localized:
-        mf.chkfile = "hamiltonians/" + description + str(args.basis) + ".chk"
+        mf.chkfile = "hamiltonians/" + description + "_" + str(args.basis) + ".chk"
         mf.kernel()
+        if not mf.converged:
+            raise ValueError("SCF didn't converge! Try increasing --scf_maxiter")
+
         if args.point_group is not None:
             print("point group:", mol.groupname)
             if hasattr(mf, "get_orbsym"):
                 print("MO irreps:", mf.get_orbsym())
     else:
-        mf.chkfile = "hamiltonians/" + description + str(args.basis) + "_Pipek.chk"
+        mf.chkfile = "hamiltonians/" + description + "_" + str(args.basis) + "_Pipek.chk"
         mf.kernel()
         localizer = lo.PipekMezey(mol, mf.mo_coeff[:, mf.mo_occ > 0])
         loc_orbs_occ = localizer.kernel()
@@ -86,3 +98,8 @@ if __name__ == "__main__":
         plt.imshow(mf.mo_coeff, cmap="PuOr", vmin=-1, vmax=1)
         plt.yticks(range(mf.mo_coeff.shape[0]), mol.ao_labels())
         plt.show()
+
+    if args.active_space is not None:
+        mycas = pyscf.mcscf.CASCI(mf, *args.active_space)
+        cas_filename = mf.chkfile[:-4] + "_CAS({0:}o{1:}e).FCIDUMP".format(*args.active_space)
+        pyscf.tools.fcidump.from_mcscf(mycas, cas_filename)
