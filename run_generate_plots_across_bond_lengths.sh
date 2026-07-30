@@ -16,5 +16,5 @@ generate_plots_across_bond_lengths(sys.argv[1], sys.argv[2], sys.argv[3])
 " "$INPUT_DIR" "$OUTPUT_DIR" "$angle_in_title"
 
 # launch with:
-# ./run_generate_plots_across_bond_lengths.sh ./outputs_/cluster_number/h4_square/6-311++g ./plots/cluster_number/across_geometries/h4_square/6-311++g
+# ./run_generate_plots_across_bond_lengths.sh ./outputs_/cluster_number/n2/sto3g ./plots/cluster_number/across_geometries/n2/sto3g
 # add flag True for angle label in the title
