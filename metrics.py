@@ -61,6 +61,7 @@ from src.clifford_sectors import (
 
 # Used by MPI worker processes (must be importable at module level).
 import ffsim
+from src.selected_sector_lanczos import restricted_linear_operator
 
 
 def submatrix_eigenvalues_to_target(A: np.ndarray, e_target: float):
@@ -166,7 +167,6 @@ def roots_per_sector(args) -> int:
 
 def solve_eigs(data):
     # mpi4py can't pickle the rotated_h_linop, so reconstruct it on each worker.
-    from mpi4py import MPI
 
     moldata = data["moldata"]
     rotated_h = data["rotated_h"]
@@ -174,9 +174,17 @@ def solve_eigs(data):
     rotated_h_linop = ffsim.linear_operator(
         rotated_h, norb=moldata.norb, nelec=moldata.nelec
     )
+    statistics = {
+        "matvec_count": 0,
+        "matvec_seconds": 0
+    }
+    # h_subspace = restricted_linear_operator(rotated_h_linop, rotated_h_linop.shape[0],
+    #                                         sector_bitstrings, statistics)
 
-    h_subspace = subspace_matrix(rotated_h_linop, sector_bitstrings)
-    if data["states_per_sector"] <= h_subspace.shape[0] - 2:
+    # h_subspace = subspace_matrix(rotated_h_linop, sector_bitstrings)
+    if data["states_per_sector"] <= len(sector_bitstrings) - 2:
+        h_subspace = restricted_linear_operator(rotated_h_linop, rotated_h_linop.shape[0],
+                                                sector_bitstrings, statistics)
         w, v = scipy.sparse.linalg.eigsh(
             h_subspace, which="SA", k=data["states_per_sector"]
         )
@@ -185,6 +193,7 @@ def solve_eigs(data):
         v_orth = orthogonalize_degenerate(w, v)
         sector_eigs = w, v_orth
     else:
+        h_subspace = subspace_matrix(rotated_h_linop, sector_bitstrings)
         sector_eigs = np.linalg.eigh(h_subspace)
 
     return {
@@ -197,7 +206,6 @@ def solve_eigs(data):
 
 def solve_eigs_davidson(data):
     """MPI worker: PySCF Davidson on the same sector block as ``solve_eigs``."""
-    from mpi4py import MPI
 
     moldata = data["moldata"]
     rotated_h = data["rotated_h"]
