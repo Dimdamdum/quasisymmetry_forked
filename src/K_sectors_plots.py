@@ -299,7 +299,7 @@ def plot_energy_vs_K(
         y_label = 'num. retained sectors'
     ax2.set_ylabel(y_label)
     ax2.grid(True, alpha=0.3)
-    ax2.set_yscale('log')
+    # ax2.set_yscale('log')
     # ax2.legend(loc='upper right')
     ax2.margins(y=0.1)
 

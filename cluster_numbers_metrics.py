@@ -862,6 +862,10 @@ def compute_sector_analysis(
             # --- B) DECOUPLED STATE-BASED APPROACH - First part: diagonalization of decoupled Hamiltonian (independent of max_elec) ---
 
             ordered_decoupled_states = get_ordered_decoupled_states(sectors, h_linop, psi)
+            num_printed_states = 5
+            logger.info(f"K_states mode: the first {num_printed_states} decoupled states have the following label and abs. overlap squared with the reference (dmrg) state")
+            for i in range(num_printed_states):
+                logger.info(f"{i} --- label: {ordered_decoupled_states[i][1]} --- |overlap|^2: {ordered_decoupled_states[i][2]}")
                 
         # Loop through each max_elec limit specified in the configuration
         for max_elec in config.max_elec_transfers:
