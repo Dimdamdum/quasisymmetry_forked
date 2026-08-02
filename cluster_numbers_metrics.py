@@ -452,6 +452,7 @@ def compute_dmrg(config: MetricsConfig) -> tuple[Block2DMRGSolver, float, np.nda
     
     logger.info(f"Number of orbitals: {norb}")
     logger.info(f"Number of electrons: {nelec}")
+    logger.info(f"Space dimension: {comb(norb, nelec[0]) * comb(norb, nelec[1])}")
     
     # Create store directory for wavefunction
     geometry_key = hashlib.sha1(

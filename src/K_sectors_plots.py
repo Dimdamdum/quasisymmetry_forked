@@ -604,6 +604,7 @@ def generate_plots_across_bond_lengths(input_dir, output_dir, angle_in_title=Fal
 
                 ax.set_xlabel("Bond length")
                 ax.set_ylabel(metric_label)
+                ax.yaxis.set_major_locator(MaxNLocator(integer=True))
                 if angle_in_title == True:
                     ax.set_title(
                         f"{molecule} / {basis_set} / cost={cost}\n"

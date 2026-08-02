@@ -4,9 +4,9 @@
 *.txt
 *.json
 __pycache__/
-outputs_/
+outputs_*/
+plots_*/
 *.~lock*
 wavefunctions/
 quasisym/
 logs/
-outputs_*/
