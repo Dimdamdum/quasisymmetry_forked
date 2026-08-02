@@ -1,0 +1,114 @@
+{
+  "metadata": {
+    "molecule": "h2o",
+    "basis_set": "6-31g",
+    "bond_length": 2.3,
+    "bond_angle": 104.5,
+    "max_elec_transfers": 2,
+    "timestamp": "20260730_022801",
+    "git_hash": "723da14",
+    "norb": 13,
+    "dmrg_energy": -75.84788784477952,
+    "cost": "variance",
+    "nelec": [
+      5,
+      5
+    ],
+    "cluster_matrix": [
+      [
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0
+      ]
+    ],
+    "cluster_sizes": [
+      3,
+      3,
+      3
+    ],
+    "computation_time_seconds": 72.86909198760986,
+    "var_exponent": 1
+  },
+  "basis_results": [
+    {
+      "data_label": "MOs",
+      "transfer_results": [
+        {
+          "max_elec_transfers": 2,
+          "K_sectors_values": [],
+          "K_sectors_energies": [],
+          "K_sectors_retained_dimensions": [],
+          "num_retained_sectors": 0,
+          "retained_dim": null,
+          "chem_accuracy_reached_sectors": false,
+          "K_states_values": [],
+          "K_states_energies": [],
+          "K_states_num_retained_state_sectors": [],
+          "num_retained_states": 0,
+          "num_retained_state_sectors": 0,
+          "chem_accuracy_reached_states": false
+        }
+      ]
+    },
+    {
+      "data_label": "NatOs",
+      "transfer_results": [
+        {
+          "max_elec_transfers": 2,
+          "K_sectors_values": [],
+          "K_sectors_energies": [],
+          "K_sectors_retained_dimensions": [],
+          "num_retained_sectors": 0,
+          "retained_dim": null,
+          "chem_accuracy_reached_sectors": false,
+          "K_states_values": [],
+          "K_states_energies": [],
+          "K_states_num_retained_state_sectors": [],
+          "num_retained_states": 0,
+          "num_retained_state_sectors": 0,
+          "chem_accuracy_reached_states": false
+        }
+      ]
+    }
+  ]
+}

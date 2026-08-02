@@ -1,0 +1,354 @@
+{
+  "metadata": {
+    "molecule": "h2o",
+    "basis_set": "sto3g",
+    "bond_length": 1.0,
+    "bond_angle": 104.5,
+    "max_elec_transfers": 2,
+    "timestamp": "20260729_051940",
+    "git_hash": "b8d076d",
+    "norb": 7,
+    "dmrg_energy": -75.01985479624115,
+    "cost": "variance",
+    "nelec": [
+      5,
+      5
+    ],
+    "cluster_matrix": [
+      [
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1,
+        1,
+        0,
+        0,
+        0
+      ]
+    ],
+    "cluster_sizes": [
+      2,
+      2
+    ],
+    "computation_time_seconds": 16.295576095581055,
+    "var_exponent": 1
+  },
+  "basis_results": [
+    {
+      "data_label": "MOs",
+      "transfer_results": [
+        {
+          "max_elec_transfers": 2,
+          "K_sectors_values": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "K_sectors_energies": [
+            -74.96619534126968,
+            -75.00272246637061,
+            -75.01490317997674,
+            -75.0186254950842
+          ],
+          "K_sectors_retained_dimensions": [
+            9,
+            51,
+            147,
+            189
+          ],
+          "num_retained_sectors": 4,
+          "retained_dim": 189,
+          "chem_accuracy_reached_sectors": true,
+          "K_states_values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ],
+          "K_states_energies": [
+            -74.96626973859925,
+            -74.98131094391967,
+            -75.00079824327409,
+            -75.00790301573498,
+            -75.01003095136168,
+            -75.01243221736807,
+            -75.01485621612649,
+            -75.01674722786161,
+            -75.01775851559124,
+            -75.01790762728844,
+            -75.01835849250072
+          ],
+          "K_states_num_retained_state_sectors": [
+            1,
+            2,
+            2,
+            3,
+            3,
+            3,
+            4,
+            4,
+            4,
+            5,
+            5
+          ],
+          "num_retained_states": 11,
+          "num_retained_state_sectors": 5,
+          "chem_accuracy_reached_states": true
+        }
+      ]
+    },
+    {
+      "data_label": "Opt. from MOs",
+      "transfer_results": [
+        {
+          "max_elec_transfers": 2,
+          "K_sectors_values": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "K_sectors_energies": [
+            -74.96590816824484,
+            -74.97928034695067,
+            -75.00291612014868,
+            -75.01892917656883
+          ],
+          "K_sectors_retained_dimensions": [
+            9,
+            105,
+            147,
+            189
+          ],
+          "num_retained_sectors": 4,
+          "retained_dim": 189,
+          "chem_accuracy_reached_sectors": true,
+          "K_states_values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "K_states_energies": [
+            -74.96598199947017,
+            -74.98213193893558,
+            -74.99824111014154,
+            -75.0052289816253,
+            -75.00987375840346,
+            -75.01404763403006,
+            -75.01237269736055,
+            -75.01005279411426,
+            -75.0105033077569,
+            -75.01292365942662,
+            -75.01647116748538,
+            -75.01586646381844,
+            -75.0168494418535,
+            -75.01691268508912,
+            -75.01851556454129
+          ],
+          "K_states_num_retained_state_sectors": [
+            1,
+            2,
+            3,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4
+          ],
+          "num_retained_states": 15,
+          "num_retained_state_sectors": 4,
+          "chem_accuracy_reached_states": true
+        }
+      ]
+    },
+    {
+      "data_label": "NatOs",
+      "transfer_results": [
+        {
+          "max_elec_transfers": 2,
+          "K_sectors_values": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "K_sectors_energies": [
+            -74.96436740464631,
+            -75.01476309289636,
+            -75.01773996197964,
+            -75.01888716437409
+          ],
+          "K_sectors_retained_dimensions": [
+            1,
+            19,
+            61,
+            121
+          ],
+          "num_retained_sectors": 4,
+          "retained_dim": 121,
+          "chem_accuracy_reached_sectors": true,
+          "K_states_values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13
+          ],
+          "K_states_energies": [
+            -74.96436740464631,
+            -74.98492139503179,
+            -75.00589644545639,
+            -75.00900258221563,
+            -75.01223692758451,
+            -75.01356921628732,
+            -75.01476309287996,
+            -75.01673185137076,
+            -75.01723895351054,
+            -75.01753567682077,
+            -75.01783449585643,
+            -75.0181221426579,
+            -75.01835678629183
+          ],
+          "K_states_num_retained_state_sectors": [
+            1,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            3,
+            3,
+            3,
+            4,
+            4,
+            4
+          ],
+          "num_retained_states": 13,
+          "num_retained_state_sectors": 4,
+          "chem_accuracy_reached_states": true
+        }
+      ]
+    },
+    {
+      "data_label": "Opt. from NatOs",
+      "transfer_results": [
+        {
+          "max_elec_transfers": 2,
+          "K_sectors_values": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "K_sectors_energies": [
+            -74.96441768996898,
+            -74.98517108953897,
+            -75.00585955799139,
+            -75.01888070269533
+          ],
+          "K_sectors_retained_dimensions": [
+            1,
+            61,
+            79,
+            121
+          ],
+          "num_retained_sectors": 4,
+          "retained_dim": 121,
+          "chem_accuracy_reached_sectors": true,
+          "K_states_values": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13
+          ],
+          "K_states_energies": [
+            -74.96441768996898,
+            -74.9814335073455,
+            -74.99470910095944,
+            -75.00078953706148,
+            -75.0046344422668,
+            -75.0106469758223,
+            -75.01367947744485,
+            -75.01536554532663,
+            -75.01650961514864,
+            -75.01709499412618,
+            -75.01782134243457,
+            -75.01815950530721,
+            -75.01857950874609
+          ],
+          "K_states_num_retained_state_sectors": [
+            1,
+            2,
+            3,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4,
+            4
+          ],
+          "num_retained_states": 13,
+          "num_retained_state_sectors": 4,
+          "chem_accuracy_reached_states": true
+        }
+      ]
+    }
+  ]
+}

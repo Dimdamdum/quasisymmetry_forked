@@ -2,7 +2,6 @@
 *.ipynb_checkpoints*
 .idea/
 *.txt
-*.json
 __pycache__/
 outputs_/
 *.~lock*
