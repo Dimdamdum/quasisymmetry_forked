@@ -7,9 +7,24 @@ import numpy as np
 import pytest
 import scipy
 import ffsim
-from src.cluster_number_operators import build_one_orb_num_operators, build_two_orb_num_operators, number_matrix_to_operators, from_num_operator_to_expnum_operator, number_and_parity_symmetry_sectors, integers_to_phases_polynomial
 from scipy.sparse.linalg import LinearOperator
 from src.sector_utils import symmetry_sectors
+import tempfile
+import shutil
+from scipy.stats import unitary_group
+from math import comb
+import pyscf
+import jax
+import jax.numpy as jnp
+
+from src.dmrg_solver import Block2DMRGSolver
+import optimize_symmetries
+optimize_symmetries.pyscf = pyscf # in case try-except import code in optimize_symmetries fails
+optimize_symmetries.ffsim = ffsim # in case try-except import code in optimize_symmetries fails
+from optimize_symmetries import variance_cost_general, eval_eq_cost
+from src.orbital_rotation import params_to_U
+
+from src.cluster_number_operators import build_one_orb_num_operators, build_two_orb_num_operators, number_matrix_to_operators, from_num_operator_to_expnum_operator, number_and_parity_symmetry_sectors, integers_to_phases_polynomial, get_cluster_indices, build_loc_number_evaluator, number_variance_cost, number_eval_eq_cost, params_to_U_jax
 
 def test_spin_orbital_occupations():
     """Testing to refresh scipy/ffsim basis ordering and operator usage"""
@@ -151,3 +166,409 @@ def test_number_and_parity_symmetry_sectors():
                         ((1,), ()): [1,2,3,6],
                         ((2,), ()): [4,5,7,8]}
     assert sectors == expected_sectors
+
+def test_get_cluster_indices():
+    cluster_matrices = [
+        np.array([[0, 0, 0, 0, 0]]),
+        np.array([[1, 1, 1, 1, 1]]),
+        np.array([
+            [1, 0]
+        ]),
+        np.array([
+            [1, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 1, 1, 0],
+            [0, 0, 0, 1, 0, 0, 0]
+        ]),
+        np.array([
+            [0, 0, 0, 1, 1],
+            [0, 1, 0, 0, 1],
+            [0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+        ])
+    ]
+
+    clusters_list = [get_cluster_indices(cluster_matrix, cluster_matrix.shape[1], with_ghost=True) for cluster_matrix in cluster_matrices]
+    clusters_list.append(get_cluster_indices(np.array([]), 5, with_ghost=True))
+
+    expected_clusters_list = [
+        [[], [0, 1, 2, 3, 4]],
+        [[0, 1, 2, 3, 4]],
+        [[0],[1]],
+        [[0], [4,5], [3], [1,2,6]],
+        [[3, 4], [1, 4], [1], [], [0,2]],
+        [[0, 1, 2, 3, 4]]
+    ]
+
+    for i in range(len(clusters_list)):
+        clusters = clusters_list[i]
+        expected_clusters = expected_clusters_list[i]
+        assert len(clusters) == len(expected_clusters)
+        for j in range(len(clusters)):
+            assert np.all(clusters[j] == expected_clusters[j])
+
+    # without ghost (default)
+    clusters_list_no_ghost = [get_cluster_indices(cluster_matrix, cluster_matrix.shape[1], with_ghost=False) for cluster_matrix in cluster_matrices]
+    clusters_list_no_ghost.append(get_cluster_indices(np.array([]), 5, with_ghost=False))
+
+    for i in range(len(clusters_list)):
+        clusters = clusters_list_no_ghost[i]
+        expected_clusters = expected_clusters_list[i].copy()
+        if i != 1: # for clusters == [[0, 1, 2, 3, 4]] i.e. cluster_matrices == np.array([[1, 1, 1, 1, 1]]), ghost and no ghost coincide 
+            expected_clusters.pop()
+        assert len(clusters) == len(expected_clusters)
+        for j in range(len(clusters)):
+            assert np.all(clusters[j] == expected_clusters[j])
+
+
+"""
+# old code for checking we understand 1rdm and 2rdm - energy cross check
+
+#   E_1 = sum_pq h1e_pq (rdm1_a_pq + rdm1_b_pq)
+#
+#   E_2 = 1/2 sum_pqrs g2e_full[p,s,q,r] * rdm2_aa[p,q,r,s]
+#       +     sum_pqrs g2e_full[p,s,q,r] * rdm2_ab[p,q,r,s]
+#       + 1/2 sum_pqrs g2e_full[p,s,q,r] * rdm2_bb[p,q,r,s]
+#   last line accounts for ab and ba; reason is rdm2_ba[p, q, r, s] = rdm2_ab[q, p, s, r]
+#   and g2e_full[p, q, r, s] = g2e_full[r, s, p, q] for particle exchange symmetry of coulomb =
+#   (...also = 6 more mat el.s for real orbitals! "8-fold permutational symmetry").
+#   And these two things are independent of orbitals being real! (Worth a double check if ever needed.)
+#
+#   E_elec = E_1 + E_2
+#   E_total = E_elec + ecore
+
+g2e_full = pyscf.ao2mo.restore(1, g2e, norb) # not compressed; chemist's notatio
+
+# One-body: direct contraction, no index permutation needed
+e1 = np.einsum('pq,pq->', h1e, rdm1_a) + np.einsum('pq,pq->', h1e, rdm1_b)
+
+# Two-body: 'psqr,pqrs->' index permutation needed - human checked!
+e2 = (
+    0.5 * np.einsum('psqr,pqrs->', g2e_full, rdm2_aa)      # alpha-alpha
+    + np.einsum('psqr,pqrs->', g2e_full, rdm2_ab)          # alpha-beta + beta-alpha
+    + 0.5 * np.einsum('psqr,pqrs->', g2e_full, rdm2_bb)    # beta-beta
+)
+
+e_check = e1 + e2 + ecore
+
+print(f"Energy from RDMs - energy from DMRG: {(e_check - result.energy):.2e} Ha")
+"""
+
+def test_params_to_U_jax():
+    norb = 4
+    n_params = norb * (norb - 1) // 2
+    
+    # Generate random test parameters
+    np.random.seed(42)
+    x_np = np.random.randn(n_params) * 0.1
+    x_jax = jnp.array(x_np)
+
+    # Evaluate both functions
+    U_np = params_to_U(x_np, norb)
+    U_jax = np.array(params_to_U_jax(x_jax, norb)) # Convert JAX array back to NumPy for comparison
+
+    # Check absolute difference
+    max_diff = np.max(np.abs(U_np - U_jax))
+
+    # Verify unitarity (U^dagger * U = I)
+    unitarity_np = np.allclose(U_np.conj().T @ U_np, np.eye(norb), atol=1e-12)
+    unitarity_jax = np.allclose(U_jax.conj().T @ U_jax, np.eye(norb), atol=1e-12)
+
+    assert max_diff < 1e-10, "Mismatch detected between NumPy and JAX parameter mappings!"
+    assert unitarity_np and unitarity_jax, "Generated matrices are not unitary!"
+
+class TestRdmRotationsLocalNumbers:
+    """Testing 1- and 2-rdm-related code."""
+    norb = 4 # if this is modified, modify also downstream definition of cluster_matrices
+    nelec = (2, 1)  # (Na, Nb)
+    dim = ffsim.dim(norb, nelec)
+
+    tmp_dir = tempfile.mkdtemp(prefix='block2_test_')
+
+    # dummy object to access, just to access solver.to_ci_vector
+    solver = Block2DMRGSolver(
+        h1e=np.zeros((norb, norb)),
+        g2e=np.zeros((norb, norb, norb, norb)),
+        ecore=0.0,
+        n_elec=nelec,
+        spin=None,
+        store_dir=tmp_dir,
+        n_threads=1,
+        save_integrals=False
+    )
+
+    # random mps
+    mps = solver.driver.get_random_mps(tag='RAND', bond_dim=5, nroots=1)
+
+    # get full state
+    psi = solver.to_ci_vector(ket=mps)
+
+    # Get RDMs
+    rdm1_a, rdm1_b = solver.driver.get_1pdm(mps)
+    rdm2_aa, rdm2_ab, rdm2_bb = solver.driver.get_2pdm(mps)
+    # Declared formulas in block2 software:
+    #
+    # rdm1_sigma[p, q] = <mps|a^dag_{p sigma}a_{q sigma}|mps>
+    #
+    # rdm2_aa[p, q, r, s] = <mps| a^dag_{p,alpha} a^dag_{q,alpha} a_{r,alpha} a_{s,alpha} |mps>   (alpha-alpha)
+    # rdm2_ab[p, q, r, s] = <mps| a^dag_{p,alpha} a^dag_{q,beta}  a_{r,beta}  a_{s,alpha} |mps>   (alpha-beta)
+    # rdm2_bb[p, q, r, s] = <mps| a^dag_{p,beta}  a^dag_{q,beta}  a_{r,beta}  a_{s,beta}  |mps>   (beta-beta)
+
+    # clean up
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # orbital rotations: identity, and random unitaries 
+    Us = []
+    Us.append(np.eye(norb))
+    for _ in range(2):
+        U = unitary_group.rvs(dim=norb)
+        Us.append(U)
+
+    # single-double excitation operators on Na, Nb-sector; one-orbital number operators
+    cre_a, des_a = ffsim.cre_a, ffsim.des_a
+    cre_b, des_b = ffsim.cre_b, ffsim.des_b
+
+    op1_a = np.empty((norb, norb), dtype=object)
+    op1_b = np.empty((norb, norb), dtype=object)
+    for p in range(norb):
+        for q in range(norb):
+            op1_a[p, q] = ffsim.linear_operator(
+                ffsim.FermionOperator({(cre_a(p), des_a(q)): 1}), norb, nelec)
+            op1_b[p, q] = ffsim.linear_operator(
+                ffsim.FermionOperator({(cre_b(p), des_b(q)): 1}), norb, nelec)
+
+    op2_aa = np.empty((norb, norb, norb, norb), dtype=object)
+    op2_ab = np.empty((norb, norb, norb, norb), dtype=object)
+    op2_bb = np.empty((norb, norb, norb, norb), dtype=object)
+    for p in range(norb):
+        for q in range(norb):
+            for r in range(norb):
+                for s in range(norb):
+                    op2_aa[p, q, r, s] = ffsim.linear_operator(
+                        ffsim.FermionOperator({(cre_a(p), cre_a(q), des_a(r), des_a(s)): 1}), norb, nelec)
+                    op2_ab[p, q, r, s] = ffsim.linear_operator(
+                        ffsim.FermionOperator({(cre_a(p), cre_b(q), des_b(r), des_a(s)): 1}), norb, nelec)
+                    op2_bb[p, q, r, s] = ffsim.linear_operator(
+                        ffsim.FermionOperator({(cre_b(p), cre_b(q), des_b(r), des_b(s)): 1}), norb, nelec)
+    
+
+    one_orb_num_operators = build_one_orb_num_operators(norb, nelec)
+                    
+    def test_rdm_rotations(self):         
+        """Reminder test on how orbital rotations are implemented
+        both on fock space level, and on 1-, 2rdm level
+        """
+        for U in self.Us:
+            U_conj = np.conj(U)
+            # PATH 1: efficient, orbital-space level way
+
+            # rotate 1rdm
+            rdm1_a_rotated = U_conj @ self.rdm1_a @ U.T
+            rdm1_b_rotated = U_conj @ self.rdm1_b @ U.T
+
+            # rotate 2rdm
+            rdm2_aa_rotated = np.einsum('pi,qj,rk,sl,ijkl->pqrs', U_conj, U_conj, U, U, self.rdm2_aa)
+            rdm2_ab_rotated = np.einsum('pi,qj,rk,sl,ijkl->pqrs', U_conj, U_conj, U, U, self.rdm2_ab)
+            rdm2_bb_rotated = np.einsum('pi,qj,rk,sl,ijkl->pqrs', U_conj, U_conj, U, U, self.rdm2_bb)
+
+            # PATH 2: inefficient, Fock-space level way
+
+            # rotated psi as we do in cost functions!
+            psi_rotated = ffsim.apply_orbital_rotation(self.psi, U, self.norb, self.nelec)
+
+            # manually compute the 1rdm and 2rdm of psi_rotated, using the precomputed operators
+            # use block2 conventions
+            rdm1_a_manual = np.array([[psi_rotated.conj() @ (self.op1_a[p, q] @ psi_rotated)
+                                        for q in range(self.norb)] for p in range(self.norb)])
+            rdm1_b_manual = np.array([[psi_rotated.conj() @ (self.op1_b[p, q] @ psi_rotated)
+                                        for q in range(self.norb)] for p in range(self.norb)])
+            rdm2_aa_manual = np.array([[[[psi_rotated.conj() @ (self.op2_aa[p, q, r, s] @ psi_rotated)
+                                        for s in range(self.norb)] for r in range(self.norb)]
+                                        for q in range(self.norb)] for p in range(self.norb)])
+            rdm2_ab_manual = np.array([[[[psi_rotated.conj() @ (self.op2_ab[p, q, r, s] @ psi_rotated)
+                                        for s in range(self.norb)] for r in range(self.norb)]
+                                        for q in range(self.norb)] for p in range(self.norb)])
+            rdm2_bb_manual = np.array([[[[psi_rotated.conj() @ (self.op2_bb[p, q, r, s] @ psi_rotated)
+                                        for s in range(self.norb)] for r in range(self.norb)]
+                                        for q in range(self.norb)] for p in range(self.norb)])
+
+            # COMPARE PATHS
+            # compare all 5 spin-resolved matrix elements and check equality within some tolerance
+            tol = 1e-14
+            checks = [
+                (rdm1_a_rotated, rdm1_a_manual),
+                (rdm1_b_rotated, rdm1_b_manual),
+                (rdm2_aa_rotated, rdm2_aa_manual),
+                (rdm2_ab_rotated, rdm2_ab_manual),
+                (rdm2_bb_rotated, rdm2_bb_manual),
+            ]
+            for (a, b) in checks:
+                diff = np.max(np.abs(a - b))
+                assert diff < tol
+
+    def test_build_loc_number_evaluator(self):         
+        """Reminder test on how orbital rotations are implemented
+        both on fock space level, and on 1-, 2rdm level
+        """
+        D = self.rdm1_a + self.rdm1_b
+        Gamma = self.rdm2_aa + self.rdm2_bb + self.rdm2_ab + self.rdm2_ab.transpose(1, 0, 3, 2)
+
+        cluster_matrices = [
+        np.array([[0, 0, 0, 0]]),
+        np.array([[1, 1, 1, 1]]),
+        np.array([
+            [1, 0, 1, 0]
+        ]),
+        np.array([
+            [1, 0, 0, 0],
+            [0, 1, 1, 0]
+        ]),
+        np.array([
+            [1, 1, 0, 0],
+            [0, 0, 1, 1],
+        ])
+        ]
+        for cluster_matrix in cluster_matrices:
+            for with_ghost in [True, False]:
+                # treat cluster info (see build_loc_number_evaluator implementation)
+                clusters = get_cluster_indices(cluster_matrix, self.norb, with_ghost=with_ghost)
+                cluster_pairs = []
+                for idx in clusters:
+                    k = idx.size
+                    tp, tq = np.triu_indices(k)  # local indices within this cluster
+                    cluster_pairs.append((idx[tp], idx[tq])) 
+
+                loc_number_evaluator = build_loc_number_evaluator(D, Gamma, cluster_matrix=cluster_matrix, with_ghost=with_ghost)
+                for U in self.Us:
+                    U_conj = np.conj(U)
+
+                    # PATH 1: efficient, orbital-space level way
+                    n1_eff, n2_eff = loc_number_evaluator(U)
+
+                    # PATH 2: inefficient, Fock-space level way
+                    # rotated psi as we do in cost functions
+                    psi_rotated = ffsim.apply_orbital_rotation(self.psi, U, self.norb, self.nelec)
+
+                    # manually compute the local number expectation values
+                    n1_manual = [np.vdot(psi_rotated, op @ psi_rotated) for op in self.one_orb_num_operators]
+                    n2_manual = np.zeros((self.norb, self.norb))
+                    for P, Q in cluster_pairs:
+                        for i in range(len(P)):
+                            p = P[i]
+                            q = Q[i]
+                            n2_manual[p, q] = np.vdot(psi_rotated, self.one_orb_num_operators[p] @ self.one_orb_num_operators[q] @ psi_rotated).real
+                            n2_manual[q, p] = n2_manual[p, q]
+                    # filling the whole n2_manual as follows would error, unless there is only one big cluster:
+                    #for p in range(self.norb):
+                    #    for q in range(self.norb):
+                    #        n2_manual[p, q] = np.vdot(psi_rotated, self.one_orb_num_operators[p] @ self.one_orb_num_operators[q] @ psi_rotated).real
+
+                    # COMPARE
+                    tol = 1e-12
+                    checks = [
+                        (n1_eff, n1_manual),
+                        (n2_eff, n2_manual)
+                    ]
+                    for (a, b) in checks:
+                        diff = np.max(np.abs(np.array(a) - b))
+                        assert diff < tol
+class TestNumberCostFunctions:
+    """Testing the two new cluster number-specific cost functions."""
+    norb = 6 # if this is modified, modify also downstream definition of cluster_matrix
+    nelec = (3, 2)  # (Na, Nb)
+    dim = ffsim.dim(norb, nelec)
+
+    tmp_dir = tempfile.mkdtemp(prefix='block2_test_')
+
+    # dummy object to access, just to access solver.to_ci_vector
+    solver = Block2DMRGSolver(
+        h1e=np.zeros((norb, norb)),
+        g2e=np.zeros((norb, norb, norb, norb)),
+        ecore=0.0,
+        n_elec=nelec,
+        spin=None,
+        store_dir=tmp_dir,
+        n_threads=1,
+        save_integrals=False
+    )
+
+    # random mps
+    mps = solver.driver.get_random_mps(tag='RAND', bond_dim=5, nroots=1)
+
+    # get full state
+    psi = solver.to_ci_vector(ket=mps)
+
+    # Get spin-summed RDMs D and Gamma
+    D = solver.driver.get_1pdm(mps)[0] + solver.driver.get_1pdm(mps)[1]
+    rdm2_aa, rdm2_ab, rdm2_bb = solver.driver.get_2pdm(mps)
+    Gamma = rdm2_aa + rdm2_bb + rdm2_ab + rdm2_ab.transpose(1, 0, 3, 2)
+
+    # Define clusters; the last 'ghost' cluster is added automatically by rdm path,
+    # but needs to be added manually in old path with operators
+    cluster_matrix = np.array([
+            [1, 0, 1, 0, 0, 0],
+            [0, 1, 0, 1, 1, 0]
+        ])
+
+    # get the full operators
+    number_operators = number_matrix_to_operators(cluster_matrix, norb, nelec)
+    ghost_number_op = number_matrix_to_operators(np.array([[0, 0, 0, 0, 0, 1]]), norb, nelec)[0]
+    number_operators_with_ghost = [op for op in number_operators]
+    number_operators_with_ghost.append(ghost_number_op)
+
+    # initiate dummy moldata of type ffsim.MolecularData, needed for old cost functions, should have norb and nelec as above
+    moldata = ffsim.MolecularData(
+        basis='sto-3g',
+        core_energy = 0.,
+        one_body_integrals = 0.,
+        two_body_integrals = 0.,
+        norb = norb,
+        nelec = nelec
+    )  
+    
+    def test_number_variance_cost(self):
+        # create random inputs for cost functions
+        number_tests = 10
+        length_x = comb(self.norb, 2)
+        xs = [np.random.rand(length_x) for _ in range(number_tests)]
+        variance_cost_with_ghost_rdm = number_variance_cost(self.D, self.Gamma, self.cluster_matrix, with_ghost=True)
+        variance_cost_with_ghost_ops = variance_cost_general(self.moldata, self.number_operators_with_ghost, self.psi)
+        variance_cost_rdm = number_variance_cost(self.D, self.Gamma, self.cluster_matrix, with_ghost=False)
+        variance_cost_ops = variance_cost_general(self.moldata, self.number_operators, self.psi)
+        for x in xs:
+            assert np.isclose(variance_cost_with_ghost_rdm(x), variance_cost_with_ghost_ops(x), atol = 1.e-10)
+            assert np.isclose(variance_cost_rdm(x), variance_cost_ops(x), atol = 1.e-10)
+
+    def test_number_eval_eq_cost(self):
+        for with_ghost in [True, False]:
+            # precompute guessed eigenvalues:
+            # PATH 1: with 1-rdm
+            evals_from_rdm = []
+            for cluster in get_cluster_indices(self.cluster_matrix, self.norb, with_ghost=with_ghost):
+                cluster_num_average = self.D[cluster, cluster].sum()
+                evals_from_rdm.append(round(cluster_num_average)) # best guess of eigenvalues
+            # PATH 2: with full state and operators
+            if with_ghost:
+                evals_from_state = [round(np.real(self.psi.T.conj() @ (op @ self.psi))) for op in self.number_operators_with_ghost] # best guess of eigenvalues
+            else:
+                evals_from_state = [round(np.real(self.psi.T.conj() @ (op @ self.psi))) for op in self.number_operators]
+            # check equality:
+            assert len(evals_from_rdm) == len(evals_from_state)
+            for i in range(len(evals_from_rdm)):
+                assert evals_from_rdm[i] == evals_from_state[i]
+            # for rdm path, we actually remove the ghost cluster:
+            if with_ghost:
+                evals_from_rdm.pop()
+            # create random inputs for cost functions
+            number_tests = 10
+            length_x = comb(self.norb, 2)
+            xs = [np.random.rand(length_x) for _ in range(number_tests)]
+            eval_eq_cost_rdm = number_eval_eq_cost(self.D, self.Gamma, self.cluster_matrix, evals_from_rdm, with_ghost=with_ghost)
+            if with_ghost:
+                eval_eq_cost_ops = eval_eq_cost(self.number_operators_with_ghost, evals_from_state, self.psi, self.norb, self.nelec)
+            else:
+                eval_eq_cost_ops = eval_eq_cost(self.number_operators, evals_from_state, self.psi, self.norb, self.nelec)
+            for x in xs:
+                assert np.isclose(eval_eq_cost_rdm(x), eval_eq_cost_ops(x))
+
+# def test_number_commutator_cost():
+
