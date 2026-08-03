@@ -25,7 +25,7 @@ from __future__ import annotations
 import argparse
 
 REFERENCE_CHOICES = ("fci", "hf", "dmrg")
-METRICS_BACKEND_CHOICES = ("fci", "dmrg", "davidson")
+METRICS_BACKEND_CHOICES = ("fci", "dmrg", "davidson", "sci")
 ORBITAL_ROTATION_CHOICES = ("full", "irrep")
 
 OPTIMIZE_EPILOG = """

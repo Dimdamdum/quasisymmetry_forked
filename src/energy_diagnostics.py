@@ -6,6 +6,8 @@ from collections.abc import Callable
 
 import numpy as np
 
+import bisect
+
 from src.coupled_energy_core import (
     CHEMICAL_PRECISION,
     COUPLED_ENERGY_DEGENERACY_FLOOR,
@@ -16,6 +18,13 @@ from src.coupled_energy_core import (
     reference_coupled_energy,
 )
 
+
+def find_first_negative(f, N):
+    domain = range(1, N + 1)
+    index = bisect.bisect_left(domain, x=True, key=lambda x: f(x) < 0)
+    if index < len(domain):
+        return domain[index]
+    return -1
 
 def diagonalize_sector_blocks(h_apply, sectors_dict, full_dim: int):
     """
@@ -100,6 +109,57 @@ def coupled_energy_perturbation(
         max_total_vectors=max_total_vectors,
         backward_prune=backward_prune,
     ).as_tuple()
+
+
+def reference_coupled_energy_K_(
+    h_apply: Callable[[np.ndarray], np.ndarray],
+    sectors: dict,
+    sector_eigs: dict,
+    reference_vector: np.ndarray,
+    e_exact: float,
+    *,
+    precision: float = CHEMICAL_PRECISION,
+):
+    # sector_reference_projection_amplitudes = {}
+    # sector_reference_weights = {}
+    # for sector_label, sector_bitstrings in sectors.items():
+    #     projected_reference = reference_vector[sector_bitstrings]
+    #     projection_amplitudes = sector_eigs[sector_label][1].T.conj() @ projected_reference
+    #     sector_reference_projection_amplitudes[sector_label] = projection_amplitudes
+    #     sector_reference_weights[sector_label] = abs(projection_amplitudes)**2
+
+    all_state_labels = []
+    sector_reference_projection_amplitudes = np.zeros((0,))
+    for sector_label, sector_gs in sector_eigs.items():
+        sector_bitstrings = sectors[sector_label]
+        labels = [(sector_label, i) for i in range(sector_gs[1].shape[1])]
+        all_state_labels.extend(labels)
+        projected_reference = reference_vector[sector_bitstrings]
+        projection_amplitudes = sector_eigs[sector_label][1].T.conj() @ projected_reference
+        sector_reference_projection_amplitudes = np.concatenate(
+            (sector_reference_projection_amplitudes, projection_amplitudes))
+
+    weights_order = np.argsort(abs(sector_reference_projection_amplitudes))[::-1]
+
+    def f(K):
+        compressed_reference_vector = np.zeros_like(reference_vector, dtype="complex")
+
+        for i in range(K):
+            sector_label, sector_eigenstate_index = all_state_labels[weights_order[i]]
+            support = sectors[sector_label]
+            compressed_reference_vector[support] += (
+                sector_eigs[sector_label][1][:, sector_eigenstate_index]
+                * sector_reference_projection_amplitudes[weights_order[i]])
+
+        compressed_reference_vector /= np.linalg.norm(compressed_reference_vector)
+
+        e_K = compressed_reference_vector.T.conj() @ h_apply(compressed_reference_vector)
+        return (e_K - e_exact - precision).real
+
+    K = find_first_negative(f, len(all_state_labels))
+    kept_states = [all_state_labels[i] for i in weights_order[:K]]
+    kept_state_weights = abs(sector_reference_projection_amplitudes[weights_order[:K]]).tolist()
+    return K, kept_states, kept_state_weights
 
 
 def reference_coupled_energy_k(
