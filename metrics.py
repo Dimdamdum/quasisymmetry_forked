@@ -219,7 +219,7 @@ def solve_eigs(data):
         w, v = scipy.sparse.linalg.eigsh(
             h_subspace, which="SA", k=data["states_per_sector"]
         )
-        v = v[:, np.argsort(w)]^S
+        v = v[:, np.argsort(w)]
         w = np.sort(w)
         v_orth = orthogonalize_degenerate(w, v)
         sector_eigs = w, v_orth
