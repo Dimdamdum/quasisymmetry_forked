@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
+import block2
 import numpy as np
 
 from src.dmrg_solver import (
@@ -80,6 +81,7 @@ class DMRGOrbitalCosts:
         mps_tag: str = "GS",
         multiply: MultiplyConfig | None = None,
         pairs=None,
+        rng_seed: int = 12345,
     ) -> None:
         self.solver = solver
         self.parity_matrix = np.atleast_2d(np.asarray(parity_matrix, dtype=int))
@@ -88,6 +90,17 @@ class DMRGOrbitalCosts:
         self.pairs = pairs
         self._eval_count = 0
         self._tag_serial = 0
+        # get_random_mps (src/dmrg_solver.py's apply_mpo) draws from block2's
+        # global RNG on every MPO-MPS multiply, with no seeding anywhere in
+        # this module. Without a fixed reseed here, commutator()/variance()
+        # are not pure functions of x: the same x evaluated twice can return
+        # different values, since the RNG stream position depends on how many
+        # prior multiplies happened this session (including the one-time,
+        # lazily-cached eta build). That silently injects noise into every
+        # finite-difference gradient the optimizer takes. Reseeding
+        # identically at the top of every call makes the cost reproducible
+        # for a repeated x (validated: bit-identical across repeated calls).
+        self._rng_seed = rng_seed
 
         self.solver._activate()
         # Working copy of the reference MPS. block2 multiply may rewrite the
@@ -162,6 +175,10 @@ class DMRGOrbitalCosts:
     def variance(self, x: np.ndarray) -> float:
         """``sum_k (1 - |<ψ|U^dagger S_k U|ψ>|^2)``."""
         self._eval_count += 1
+        # Reseed so every call starts its MPO-MPS multiplies (get_random_mps)
+        # from the same RNG state, making this a pure function of x. See the
+        # note on ``rng_seed`` in __init__.
+        block2.Random.rand_seed(self._rng_seed)
         rotation = rotation_from_parameters(x, self.solver.n_sites, self.pairs)
         total = 0.0
         for row in self.parity_matrix:
@@ -175,6 +192,10 @@ class DMRGOrbitalCosts:
         """``sum_k ||[H, U^dagger S_k U] |ψ>||^2``."""
         self._eval_count += 1
         self._ensure_eta()
+        # Reseed *after* _ensure_eta (whose one-time build also draws from
+        # the RNG) so the row loop below always starts from the same state,
+        # on the first call and every subsequent one alike.
+        block2.Random.rand_seed(self._rng_seed)
         rotation = rotation_from_parameters(x, self.solver.n_sites, self.pairs)
         total = 0.0
         for row in self.parity_matrix:

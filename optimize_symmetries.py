@@ -622,8 +622,6 @@ if __name__=="__main__":
             parser.error("--reference dmrg requires a parity matrix (not --seniority)")
         if args.parity is None:
             parser.error("--reference dmrg requires a parity matrix file")
-        if args.orbene_npy is not None:
-            parser.error("--orbene_npy is not supported with --reference dmrg")
 
         parity_matrix = np.atleast_2d(np.loadtxt(args.parity, dtype=int))
         store_dir = args.wavefunction_dir
@@ -702,6 +700,25 @@ if __name__=="__main__":
                 one_body_integrals=rh.one_body_tensor,
                 two_body_integrals=rh.two_body_tensor,
             ).to_fcidump(args.output_fcidump)
+
+        if args.orbene_npy is not None:
+            # Generalized Fock matrix diagonal in the rotated orbital basis,
+            # built from the fixed DMRG reference's 1-RDM (rotated into the
+            # optimized basis) rather than a state re-solved at the rotated
+            # integrals. Same construction as the FCI path below; rotation
+            # convention (U^T @ rdm1 @ U) validated to match ffsim's
+            # ``.rotated(U)`` output against the FCI-reference orbenes for
+            # a shared test rotation.
+            from src.dmrg_solver import rotate_integrals
+
+            U_opt = x_to_rotation(res.x, solver.n_sites, rotation_pairs)
+            dm_a, dm_b = solver.driver.get_1pdm(solver.get_mps(dmrg_result.mps_tag))
+            rdm1_rot = U_opt.T @ (dm_a + dm_b) @ U_opt
+            h1e_rot, g2e_rot = rotate_integrals(solver.h1e, solver.g2e, U_opt)
+            J = np.einsum('pqrs,rs->pq', g2e_rot, rdm1_rot)
+            K = np.einsum('psrq,rs->pq', g2e_rot, rdm1_rot)
+            fock_rot = h1e_rot + J - 0.5 * K
+            np.save(args.orbene_npy, np.diag(fock_rot).real)
 
         p = Path(args.molpath)
         if args.outname:

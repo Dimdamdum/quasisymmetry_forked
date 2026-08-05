@@ -28,7 +28,7 @@ from src.coupled_energy_core import (
 from src.energy_diagnostics import (
     reference_coupled_energy_k,
     sector_data_from_gs_pairs,
-    state_labels_for_columns,
+    state_labels_for_columns, reference_coupled_energy_K_,
 )
 from src.davidson_solver import solve_sector_davidson
 from src.sector_utils import subspace_matrix, symmetry_sectors
@@ -58,6 +58,10 @@ from src.clifford_sectors import (
     tapered_operator,
     z_symmetries_from_parity_matrix,
 )
+
+import src.sci
+from pyscf.fci import selected_ci
+
 
 # Used by MPI worker processes (must be importable at module level).
 import ffsim
@@ -149,12 +153,7 @@ def orthogonalize_degenerate(w, V, tol=1e-10):
     return V_orth
 
 
-def find_first_negative(f, N):
-    domain = range(1, N + 1)
-    index = bisect.bisect_left(domain, x=True, key=lambda x: f(x) < 0)
-    if index < len(domain):
-        return domain[index]
-    return -1
+
 
 
 def roots_per_sector(args) -> int:
@@ -164,9 +163,38 @@ def roots_per_sector(args) -> int:
     return int(args.states_per_sector)
 
 
+def solve_eigs_sci(data):
+    moldata = data["moldata"]
+    rotated_h = data["rotated_h"]
+    sector_bitstrings = data["sector_bitstrings"]
+
+    dets = src.sci.fci_addresses_to_sci_dets(sector_bitstrings,
+                                             moldata.norb,
+                                             moldata.nelec)
+
+    h1e = rotated_h.one_body_tensor
+    h2e = rotated_h.two_body_tensor
+
+    myci = selected_ci.SelectedCI()
+    e, c = src.sci.kernel_fixed_list(myci, h1e, h2e,
+                                     moldata.norb, moldata.nelec, dets,
+                                     nroots=min(data["states_per_sector"], len(sector_bitstrings)),
+                                     ecore=moldata.core_energy)
+
+    vs = np.zeros((len(sector_bitstrings), len(e)))
+    for i, ci in enumerate(c):
+        vs[:, i] = ci
+
+    return {
+        "sector_label": data["sector_label"],
+        "sector_eigs": (e, vs),
+        "rank": MPI.COMM_WORLD.Get_rank(),
+        "hostname": MPI.Get_processor_name(),
+    }
+
+
 def solve_eigs(data):
     # mpi4py can't pickle the rotated_h_linop, so reconstruct it on each worker.
-    from mpi4py import MPI
 
     moldata = data["moldata"]
     rotated_h = data["rotated_h"]
@@ -193,6 +221,7 @@ def solve_eigs(data):
         "rank": MPI.COMM_WORLD.Get_rank(),
         "hostname": MPI.Get_processor_name(),
     }
+
 
 
 def solve_eigs_davidson(data):
@@ -914,7 +943,7 @@ if __name__ == "__main__":
         rotated_h, norb=moldata.norb, nelec=moldata.nelec
     )
 
-    e_ref, _ = get_fci(dumpdata)
+    e_ref, fcivec = get_fci(dumpdata)
     print("FCI ", e_ref)
 
     out_data["backend"] = args.backend
@@ -952,7 +981,13 @@ if __name__ == "__main__":
         for k, v in sectors.items()
     ]
 
-    worker = solve_eigs_davidson if use_davidson else solve_eigs
+    if args.backend == "davidson":
+        worker = solve_eigs_davidson
+    elif args.backend == "sci":
+        worker = solve_eigs_sci
+    else:
+        worker = solve_eigs
+
     sector_eigs = {}
     sector_solver_meta = {}
     solve_start = time.perf_counter()
@@ -1017,20 +1052,27 @@ if __name__ == "__main__":
             print("PT coupled-energy did not converge within chemical precision")
 
     elif args.coupled_energy_method == "reference":
-        print("Calculating K via overlap ordering against DMRG wavefunction")
-        from src.dmrg_solver import DMRGConfig, get_dmrg_reference
+        # print("Calculating K via overlap ordering against DMRG wavefunction")
+        print("Calculating K via overlap ordering against FCI wavefunction")
 
-        _, refvec = get_dmrg_reference(
-            dumpdata,
-            store_dir=args.wavefunction_dir,
-            config=DMRGConfig(max_bond_dim=args.bond_dim),
-            n_threads=args.n_threads,
-            reuse=True,
-        )
+        # todo: add back this dmrg bullshit with a call option?
+        # from src.dmrg_solver import DMRGConfig, get_dmrg_reference
+        #
+        # _, refvec = get_dmrg_reference(
+        #     dumpdata,
+        #     store_dir=args.wavefunction_dir,
+        #     config=DMRGConfig(max_bond_dim=args.bond_dim),
+        #     n_threads=args.n_threads,
+        #     reuse=True,
+        # )
+        # rotated_refvec = ffsim.apply_orbital_rotation(
+        #     refvec, U, norb=moldata.norb, nelec=moldata.nelec
+        # )
+
         rotated_refvec = ffsim.apply_orbital_rotation(
-            refvec, U, norb=moldata.norb, nelec=moldata.nelec
+            fcivec, U, norb=moldata.norb, nelec=moldata.nelec
         )
-        out_data["overlap_reference"] = "dmrg"
+        out_data["overlap_reference"] = "fci"
 
         full_space_vectors = []
         for k, v in sectors.items():
@@ -1042,23 +1084,27 @@ if __name__ == "__main__":
             full_space_vectors.append(full_space_vectors_in_sector)
         full_space_vectors_cat = np.concatenate(full_space_vectors, axis=1)
 
-        k_min, e_coupled, converged, weights_order = reference_coupled_energy_k(
-            h_apply,
-            full_space_vectors_cat,
-            rotated_refvec,
-            e_ref,
-            chemical_precision=CHEMICAL_PRECISION,
-        )
-        print("E_coupled (full projection)", e_coupled)
+        k_min, chosen_keys, kept_state_weights = reference_coupled_energy_K_(h_apply, sectors, sector_eigs, rotated_refvec, e_ref)
+        # quit()
+
+        # k_min, e_coupled, converged, weights_order = reference_coupled_energy_k(
+        #     h_apply,
+        #     full_space_vectors_cat,
+        #     rotated_refvec,
+        #     e_ref,
+        #     chemical_precision=CHEMICAL_PRECISION,
+        # )
+        # print("E_coupled (full projection)", e_coupled)
         out_data["K"] = k_min
-        if k_min is None:
+        if k_min is None or k_min == -1:
             print("Not enough states per sector")
             quit()
 
         print("K ", k_min)
 
-        all_state_labels = state_labels_for_columns(sector_eigs)
-        chosen_keys = [all_state_labels[weights_order[i]] for i in range(k_min)]
+        # all_state_labels = state_labels_for_columns(sector_eigs)
+        # chosen_keys = [all_state_labels[weights_order[i]] for i in range(k_min)]
+        out_data["weights"] = kept_state_weights
 
     print("Sector eigenstates used (sector and excitation level):")
     for key in chosen_keys:

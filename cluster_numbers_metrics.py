@@ -1330,69 +1330,69 @@ def generate_plots(
                 plt.close(fig)
 
     # --- B) Decoupled states-based metrics ---
-        if not skip_K_states:
-            # Plot 1: Energy vs K_states
-            fig = plot_energy_vs_K(
-                data_label_list,
-                K_states_values_list,
-                K_states_energies_list,
-                K_states_num_retained_state_sectors_list,
-                metadata["dmrg_energy"],
-                molecule=metadata["molecule"],
-                basis_set=metadata["basis_set"],
-                norb=metadata.get("norb", "?"),
-                cluster_sizes=metadata.get("cluster_sizes", "?"),
-                max_elec_transfers=max_elec,  # pass the specific integer here
-                cost=metadata["cost"],
-                sectors_or_states='states'
+    if not skip_K_states:
+        # Plot 1: Energy vs K_states
+        fig = plot_energy_vs_K(
+            data_label_list,
+            K_states_values_list,
+            K_states_energies_list,
+            K_states_num_retained_state_sectors_list,
+            metadata["dmrg_energy"],
+            molecule=metadata["molecule"],
+            basis_set=metadata["basis_set"],
+            norb=metadata.get("norb", "?"),
+            cluster_sizes=metadata.get("cluster_sizes", "?"),
+            max_elec_transfers=max_elec,  # pass the specific integer here
+            cost=metadata["cost"],
+            sectors_or_states='states'
+        )
+        if save:
+            filename = f"energy_vs_states_{metadata['cost']}_{timestamp}.png"
+            filepath = plots_dir / filename
+            fig.savefig(filepath, dpi=300, bbox_inches="tight")
+            logger.info(f"Energy vs states plot saved to {filepath}")
+        if show:
+            plt.show()
+        plt.close(fig)
+
+        # Plot 2: Dual bar chart
+        if not any(chem_accuracy_reached_states_list):
+            logger.info(f"No basis reached chemical accuracy for max_elec={max_elec}. Skipping 2nd plot (dual bar chart).")
+        else:
+            # Prepare data for dual bar chart
+            colors = [f'C{i}' for i in range(len(data_label_list))]
+            colors_cp = list(compress(colors, chem_accuracy_reached_states_list))
+            x_data_cp = list(compress(data_label_list, chem_accuracy_reached_states_list))
+            y1_data_cp = list(compress(num_retained_states_list, chem_accuracy_reached_states_list))
+            y2_data_cp = list(compress(num_retained_state_sectors_list, chem_accuracy_reached_states_list))
+
+            title = (
+                f"State analysis for {metadata['molecule']} in {metadata['basis_set']} basis set \n "
+                f"Num. orbitals = {metadata.get('norb', '?')}, cluster sizes = {metadata.get('cluster_sizes', '?')}, "
+                f"max $e^-$ transfers = {max_elec}, cost = {metadata['cost']}"
             )
+
+            fig = plot_dual_bar_chart(
+                x_data=x_data_cp,
+                y1_data=y1_data_cp,
+                y2_data=y2_data_cp,
+                label1="Number of retained states",
+                label2="Number of retained state sectors",
+                title=title,
+                colors=colors_cp,
+                alpha=(0.8, 0.4)
+            )
+
             if save:
-                filename = f"energy_vs_states_{metadata['cost']}_{timestamp}.png"
+                filename = f"retained_states_bar_chart_{metadata['cost']}_{timestamp}.png"
                 filepath = plots_dir / filename
                 fig.savefig(filepath, dpi=300, bbox_inches="tight")
-                logger.info(f"Energy vs states plot saved to {filepath}")
+                logger.info(f"Retained states bar chart saved to {filepath}")
+
             if show:
                 plt.show()
-            plt.close(fig)
-
-            # Plot 2: Dual bar chart
-            if not any(chem_accuracy_reached_states_list):
-                logger.info(f"No basis reached chemical accuracy for max_elec={max_elec}. Skipping 2nd plot (dual bar chart).")
             else:
-                # Prepare data for dual bar chart
-                colors = [f'C{i}' for i in range(len(data_label_list))]
-                colors_cp = list(compress(colors, chem_accuracy_reached_states_list))
-                x_data_cp = list(compress(data_label_list, chem_accuracy_reached_states_list))
-                y1_data_cp = list(compress(num_retained_states_list, chem_accuracy_reached_states_list))
-                y2_data_cp = list(compress(num_retained_state_sectors_list, chem_accuracy_reached_states_list))
-
-                title = (
-                    f"State analysis for {metadata['molecule']} in {metadata['basis_set']} basis set \n "
-                    f"Num. orbitals = {metadata.get('norb', '?')}, cluster sizes = {metadata.get('cluster_sizes', '?')}, "
-                    f"max $e^-$ transfers = {max_elec}, cost = {metadata['cost']}"
-                )
-
-                fig = plot_dual_bar_chart(
-                    x_data=x_data_cp,
-                    y1_data=y1_data_cp,
-                    y2_data=y2_data_cp,
-                    label1="Number of retained states",
-                    label2="Number of retained state sectors",
-                    title=title,
-                    colors=colors_cp,
-                    alpha=(0.8, 0.4)
-                )
-
-                if save:
-                    filename = f"retained_states_bar_chart_{metadata['cost']}_{timestamp}.png"
-                    filepath = plots_dir / filename
-                    fig.savefig(filepath, dpi=300, bbox_inches="tight")
-                    logger.info(f"Retained states bar chart saved to {filepath}")
-
-                if show:
-                    plt.show()
-                else:
-                    plt.close(fig)
+                plt.close(fig)
 
 
 
