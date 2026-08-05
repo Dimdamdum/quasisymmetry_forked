@@ -168,6 +168,9 @@ def solve_eigs_sci(data):
     rotated_h = data["rotated_h"]
     sector_bitstrings = data["sector_bitstrings"]
 
+    print("building ci stuff for ", data["sector_label"], time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()))
+
+
     dets = src.sci.fci_addresses_to_sci_dets(sector_bitstrings,
                                              moldata.norb,
                                              moldata.nelec)
@@ -176,6 +179,9 @@ def solve_eigs_sci(data):
     h2e = rotated_h.two_body_tensor
 
     myci = selected_ci.SelectedCI()
+
+    print("qty of dets", len(dets))
+
     e, c = src.sci.kernel_fixed_list(myci, h1e, h2e,
                                      moldata.norb, moldata.nelec, dets,
                                      nroots=min(data["states_per_sector"], len(sector_bitstrings)),
@@ -184,6 +190,9 @@ def solve_eigs_sci(data):
     vs = np.zeros((len(sector_bitstrings), len(e)))
     for i, ci in enumerate(c):
         vs[:, i] = ci
+
+    print("solved for ", data["sector_label"], time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()))
+
 
     return {
         "sector_label": data["sector_label"],
@@ -203,17 +212,20 @@ def solve_eigs(data):
         rotated_h, norb=moldata.norb, nelec=moldata.nelec
     )
 
+    print("building h for ", data["sector_label"], time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()))
     h_subspace = subspace_matrix(rotated_h_linop, sector_bitstrings)
+    print("done building h for ", data["sector_label"], time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()))
     if data["states_per_sector"] <= h_subspace.shape[0] - 2:
         w, v = scipy.sparse.linalg.eigsh(
             h_subspace, which="SA", k=data["states_per_sector"]
         )
-        v = v[:, np.argsort(w)]
+        v = v[:, np.argsort(w)]^S
         w = np.sort(w)
         v_orth = orthogonalize_degenerate(w, v)
         sector_eigs = w, v_orth
     else:
         sector_eigs = np.linalg.eigh(h_subspace)
+    print("solved for ", data["sector_label"], time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()))
 
     return {
         "sector_label": data["sector_label"],
