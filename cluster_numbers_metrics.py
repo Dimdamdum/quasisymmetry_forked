@@ -82,7 +82,7 @@ from datetime import datetime
 from math import comb, inf
 from pathlib import Path
 from typing import Any
-from itertools import compress
+from itertools import compress, islice
 
 import numpy as np
 import pyscf
@@ -442,9 +442,15 @@ def compute_dmrg(config: MetricsConfig) -> tuple[Block2DMRGSolver, float, np.nda
         hoh_angle_deg=config.bond_angle
     )
     mol = pyscf.M(atom=geometry, basis=config.basis_set)
-    mf = pyscf.scf.RHF(mol)
+    mf = pyscf.scf.RHF(mol) # may not converged for stretched bonds - consider upgrading
+    mf.verbose = 0
     mf.kernel()
-    
+
+    if mf.converged:
+        logger.info(f"HF successfully converged with energy = {mf.e_tot}")
+    else:
+        logger.info(f"!!! HF FAILED to converge. Last energy = {mf.e_tot}")
+        
     norb, nelec = mol.nao, mol.nelec
     h1e = mf.mo_coeff.T @ mf.get_hcore() @ mf.mo_coeff
     g2e = pyscf.ao2mo.full(mol, mf.mo_coeff)
@@ -705,6 +711,37 @@ def optimize_orbital_basis(
     
     return U_opt_list, cost_data
 
+def get_ordered_state_projections_in_sectors(sectors, h_linop, psi):
+    """
+    Orders sectors based on overlap with reference psi.
+
+    Parameters:
+    -----------
+    sectors : dict
+        A dictionary mapping sector labels to their corresponding indices 
+        in the full Hilbert space (e.g., {label: indices}).
+    h_linop : scipy.sparse.linalg.LinearOperator or numpy.ndarray
+        The full system Hamiltonian operator or matrix.
+    psi : numpy.ndarray
+        The target reference state vector used to compute overlaps.
+
+    Returns:
+    --------
+    ordered_state_projections_in_sectors : dictionary mapping sector label to tuple (P|psi>, ||P|psi⟩||^2, <psi|P H P|psi>/||P|psi⟩||^2), where P is the projector for that sector.
+    """
+    state_projections_in_sectors = {} # key = sector label (as in sectors), value = (projection of psi into sectors, norm squared)
+    for sector_label, sector_indices in sectors.items():
+        projection = np.zeros(psi.shape, dtype='complex')
+        projection[sector_indices] = psi[sector_indices]
+        norm_squared = np.linalg.norm(projection)**2
+        energy = np.real(projection.T.conj() @ h_linop @ projection / norm_squared) if norm_squared > 0 else np.nan
+        state_projections_in_sectors[sector_label] = (projection, norm_squared, energy)
+
+    # order state_projections_in_sectors projections by norm_squared
+    ordered_state_projections_in_sectors = sorted(state_projections_in_sectors.items(), key=lambda x: x[1][1], reverse=True)
+
+    return(ordered_state_projections_in_sectors)
+
 def get_ordered_decoupled_states(sectors, h_linop, psi):
     """
     Computes and ranks the full-space eigenstates of decoupled symmetry sectors 
@@ -859,14 +896,25 @@ def compute_sector_analysis(
         logger.info(f"Analyzing basis: {data_label}")
         
         transfer_results = []
-        if not config.skip_K_states:
-            # --- B) DECOUPLED STATE-BASED APPROACH - First part: diagonalization of decoupled Hamiltonian (independent of max_elec) ---
 
+        if not config.skip_K_states:
+            # --- preprocessing for A) SECTOR-BASED MODE - ordered sectors by decreasing ref. state projection (independent of max_elec!) ---
+            logger.info(f"Ordering sectors by decreasing ref. state projection")
+            ordered_state_projections_in_sectors = get_ordered_state_projections_in_sectors(sectors, h_linop, psi)
+            num_printed_sectors = min(10, len(ordered_state_projections_in_sectors))
+            logger.info(f"A) K_sectors mode: finished ordering sectors by decreasing overlap with ref. (dmrg) state. The first {num_printed_sectors} sectors have the following label, squared norm of ref. state projection, and corresponding energy.")
+            for i in range(num_printed_sectors):
+                label, value = ordered_state_projections_in_sectors[i]
+                logger.info(f"{i} --- label: {label} --- ||proj||^2: {value[1].round(6)} --- <proj|H|proj>/norm^2: {value[2].round(6)}")
+
+        if not config.skip_K_states:
+            # --- preprocessing for B) DECOUPLED STATE-BASED MODE - diagonalization of decoupled Hamiltonian with ordering by decreasing overlap (independent of max_elec!) ---
+            logger.info(f"Diagonalization of decoupled Hamiltonian")
             ordered_decoupled_states = get_ordered_decoupled_states(sectors, h_linop, psi)
-            num_printed_states = 5
-            logger.info(f"K_states mode: the first {num_printed_states} decoupled states have the following label and abs. overlap squared with the reference (dmrg) state")
+            num_printed_states = min(10, len(ordered_decoupled_states))
+            logger.info(f"B) K_states mode: finished getting decoupled states. The first {num_printed_states} decoupled states have the following label and abs. overlap squared with the reference (dmrg) state")
             for i in range(num_printed_states):
-                logger.info(f"{i} --- label: {ordered_decoupled_states[i][1]} --- |overlap|^2: {ordered_decoupled_states[i][2]}")
+                logger.info(f"{i} --- label: {ordered_decoupled_states[i][1]} --- |overlap|^2: {(np.abs(ordered_decoupled_states[i][2])**2).round(6)}")
                 
         # Loop through each max_elec limit specified in the configuration
         for max_elec in config.max_elec_transfers:
@@ -888,13 +936,14 @@ def compute_sector_analysis(
                 chem_accuracy_reached_states=False
             )
             if not config.skip_K_sectors:
-                # --- A) SECTOR-BASED APPROACH - Collect data (dependent on max_elec) ---
+                # --- A) SECTOR-BASED MODE - Collect data (dependent on max_elec) ---
                 K_sectors_values, K_sectors_energies, K_sectors_retained_dimensions, chem_accuracy_reached_sectors = (
                     get_K_sectors_values_energies(
                         psi, 
                         h_linop, 
                         dmrg_energy, 
-                        sectors, 
+                        sectors,
+                        ordered_state_projections_in_sectors,
                         max_elec,  # Use the specific integer here
                         "projected",
                         max_K_sectors=config.max_K_sectors,
@@ -911,12 +960,12 @@ def compute_sector_analysis(
                 transfer_result.chem_accuracy_reached_sectors = chem_accuracy_reached_sectors
                 
                 logger.info(
-                    f"  A) Sector-based approach - max_elec={max_elec}: {len(K_sectors_values)} sectors, "
+                    f"  A) Sector-based mode - max_elec={max_elec}: {len(K_sectors_values)} sectors, "
                     f"dim={K_sectors_retained_dimensions[-1]}, chem_accuracy={chem_accuracy_reached_sectors}"
                 )
 
             if not config.skip_K_states:
-                # --- B) DECOUPLED STATE-BASED APPROACH - Second part: prepare plot data ---
+                # --- B) DECOUPLED STATE-BASED MODE - Second part: prepare plot data ---
 
                 K_states_values, K_states_energies, K_states_num_retained_state_sectors, chem_accuracy_reached_states, retained_sector_labels = (
                                     get_K_states_values_energies(
@@ -939,11 +988,11 @@ def compute_sector_analysis(
                 transfer_result.chem_accuracy_reached_states = chem_accuracy_reached_states
 
                 logger.info(
-                    f"  B) State-based approach - max_elec={max_elec}: {len(K_states_values)} decoupled states, "
+                    f"  B) State-based mode - max_elec={max_elec}: {len(K_states_values)} decoupled states, "
                     f"num_sectors={K_states_num_retained_state_sectors[-1]}, chem_accuracy={chem_accuracy_reached_states}"
                 )
                 
-            # Store data from both sector- and state-based approaches
+            # Store data from both sector- and state-based modees
             transfer_results.append(transfer_result)
         
         # Package all transfer limit results into the final BasisResult
@@ -1243,7 +1292,7 @@ def generate_plots(
         
         # Plot 2: Dual bar chart
         if not any(chem_accuracy_reached_sectors_list):
-            print(f"No basis reached chemical accuracy for max_elec={max_elec}. Skipping 2nd plot (dual bar chart).")
+            logger.info(f"No basis reached chemical accuracy for max_elec={max_elec}. Skipping 2nd plot (dual bar chart).")
         else:
             # Prepare data for dual bar chart
             colors = [f'C{i}' for i in range(len(data_label_list))]
@@ -1308,7 +1357,7 @@ def generate_plots(
 
             # Plot 2: Dual bar chart
             if not any(chem_accuracy_reached_states_list):
-                print(f"No basis reached chemical accuracy for max_elec={max_elec}. Skipping 2nd plot (dual bar chart).")
+                logger.info(f"No basis reached chemical accuracy for max_elec={max_elec}. Skipping 2nd plot (dual bar chart).")
             else:
                 # Prepare data for dual bar chart
                 colors = [f'C{i}' for i in range(len(data_label_list))]

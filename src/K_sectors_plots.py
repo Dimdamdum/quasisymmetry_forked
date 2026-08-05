@@ -78,22 +78,9 @@ def energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_projections
     if projected_or_lowest == 'projected':
         return projected_energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_projections_in_sectors)
 
-def get_K_sectors_values_energies(psi, h_linop, ref_energy, sectors, max_elec_transfers, projected_or_lowest, max_K_sectors=inf, verbose=0):
+def get_K_sectors_values_energies(psi, h_linop, ref_energy, sectors, ordered_state_projections_in_sectors, max_elec_transfers, projected_or_lowest, max_K_sectors=inf, verbose=0):
     assert np.isclose(ref_energy, np.vdot(psi, h_linop @ psi).real, atol=1e-10)
     assert np.isclose(0, np.vdot(psi, h_linop @ psi).imag, atol=1e-10)
-    state_projections_in_sectors = {} # key = sector label (as in sectors), value = (projection of psi into sectors, norm squared)
-    for sector_label, sector_indices in sectors.items():
-        projection = np.zeros(psi.shape, dtype='complex')
-        projection[sector_indices] = psi[sector_indices]
-        norm_squared = np.linalg.norm(projection)**2
-        energy = np.real(projection.T.conj() @ h_linop @ projection / norm_squared) if norm_squared > 0 else np.nan
-        state_projections_in_sectors[sector_label] = (projection, norm_squared, energy)
-
-    # order state_projections_in_sectors projections by norm_squared
-    ordered_state_projections_in_sectors = sorted(state_projections_in_sectors.items(), key=lambda x: x[1][1], reverse=True)
-    # print(f"\nState projections in sectors (ordered by norm squared):")
-    #for sector_label, (projection, norm_squared, energy) in ordered_state_projections_in_sectors:
-    #    print(f"Projection of psi into sector {sector_label}: norm squared = {norm_squared:.6f}, energy of projection = {energy:.6f}")
 
     # Convergence in the number of sectors retained - preparing output objects
     K_sectors_values = []
