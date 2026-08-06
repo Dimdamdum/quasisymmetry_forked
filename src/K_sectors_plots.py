@@ -225,11 +225,15 @@ def plot_energy_vs_K(
     cluster_sizes='...',
     max_elec_transfers='...',
     cost='...',
-    sectors_or_states='...'
+    sectors_or_states='...',
+    from_beam_search=False,
+    min_child_cluster_size='...',
+    target_num_clusters='...',
+    initial_basis='...'
 ):
     """
     Double plot: energy and retained dimension/retained num. of sectors vs list of integers K_list (either K_sectors_values_list or K_states_values_list).
-    
+
     Args:
         data_label_list: List of data labels
         K_lists: List of lists of K values
@@ -243,6 +247,13 @@ def plot_energy_vs_K(
         max_elec_transfers: Maximum electron transfers (for title)
         cost: Cost type (for title)
         sectors_or_states: 'sectors' or 'states'
+        from_beam_search: if False (default), the title is exactly as before and
+            min_child_cluster_size/target_num_clusters/initial_basis are ignored. If True, one
+            extra title line is appended showing those three (the decomposition beam search's
+            own hyperparameters, not applicable to the fixed-cluster workflow).
+        min_child_cluster_size: only shown (in the extra title line) if from_beam_search=True
+        target_num_clusters: only shown (in the extra title line) if from_beam_search=True
+        initial_basis: only shown (in the extra title line) if from_beam_search=True
     """
     assert sectors_or_states in ['sectors', 'states'], "sectors_or_states must be 'sectors' or 'states'"
 
@@ -291,12 +302,17 @@ def plot_energy_vs_K(
     ax2.margins(y=0.1)
 
     # --- Figure-level settings ---
-    fig.suptitle(
-        'Energy against number of ' + sectors_or_states + 
+    title_str = (
+        'Energy against number of ' + sectors_or_states +
         f' for {molecule} in {basis_set} basis \n Num. orbitals = {norb}, ' +
-        f'cluster sizes = {cluster_sizes} + ghost, max $e^-$ transfers = {max_elec_transfers}, cost = {cost}',
-        y=0.98
+        f'cluster sizes = {cluster_sizes}, max $e^-$ transfers = {max_elec_transfers}, cost = {cost}'
     )
+    if from_beam_search:
+        title_str += (
+            f'\nmin. child cl. size = {min_child_cluster_size}, '
+            f'target num. clusters = {target_num_clusters}, in. basis = {initial_basis}'
+        )
+    fig.suptitle(title_str, y=0.98)
 
     return fig
 
@@ -309,7 +325,11 @@ def plot_dual_bar_chart(
     label2="...",
     title="...",
     colors=None,
-    alpha=(0.8, 0.4)
+    alpha=(0.8, 0.4),
+    from_beam_search=False,
+    min_child_cluster_size='...',
+    target_num_clusters='...',
+    initial_basis='...'
 ):
     """
     Plots a dual-axis bar chart for two sets of y-data sharing the same x-axis labels.
@@ -323,6 +343,13 @@ def plot_dual_bar_chart(
         title: Plot title
         colors: List of colors (one per x tick)
         alpha: Tuple of (alpha_for_y1, alpha_for_y2)
+        from_beam_search: if False (default), the title is used exactly as given and
+            min_child_cluster_size/target_num_clusters/initial_basis are ignored. If True, one
+            extra line is appended to `title` showing those three (the decomposition beam
+            search's own hyperparameters, not applicable to the fixed-cluster workflow).
+        min_child_cluster_size: only shown (in the extra title line) if from_beam_search=True
+        target_num_clusters: only shown (in the extra title line) if from_beam_search=True
+        initial_basis: only shown (in the extra title line) if from_beam_search=True
     """
     fig, ax1 = plt.subplots(figsize=(8, 5))
 
@@ -363,7 +390,13 @@ def plot_dual_bar_chart(
     ax1.set_xticklabels(x_data)
     ax1.set_xlabel('Basis')
 
-    plt.title(title)
+    title_str = title
+    if from_beam_search:
+        title_str = title_str + (
+            f'\nmin. child cl. size = {min_child_cluster_size}, '
+            f'target num. clusters = {target_num_clusters}, in. basis = {initial_basis}'
+        )
+    plt.title(title_str)
 
     return fig
 

@@ -1207,9 +1207,18 @@ def generate_plots(
     show: bool = False,
     save: bool = True,
     skip_K_sectors: bool = False,
-    skip_K_states: bool = False
+    skip_K_states: bool = False,
+    from_beam_search: bool = False,
+    min_child_cluster_size='...',
+    target_num_clusters='...',
+    initial_basis='...',
 ) -> None:
-    """Generate and save two pairs of plots (sector-based + decoupled states-based pairs) from metrics output for a specific max electron transfer limit."""
+    """Generate and save two pairs of plots (sector-based + decoupled states-based pairs) from metrics output for a specific max electron transfer limit.
+
+    from_beam_search/min_child_cluster_size/target_num_clusters/initial_basis are passed
+    through unchanged to plot_energy_vs_K/plot_dual_bar_chart (src/K_sectors_plots.py): with
+    from_beam_search=False (default), they have no effect; with from_beam_search=True, an
+    extra title line shows the decomposition beam search's own hyperparameters."""
     import matplotlib
     if not save:
         matplotlib.use("Agg")  # Use non-interactive backend if not saving
@@ -1279,7 +1288,11 @@ def generate_plots(
             cluster_sizes=metadata.get("cluster_sizes", "?"),
             max_elec_transfers=max_elec,  # pass the specific integer here
             cost=metadata["cost"],
-            sectors_or_states='sectors'
+            sectors_or_states='sectors',
+            from_beam_search=from_beam_search,
+            min_child_cluster_size=min_child_cluster_size,
+            target_num_clusters=target_num_clusters,
+            initial_basis=initial_basis,
         )
         if save:
             filename = f"energy_vs_sectors_{metadata['cost']}_{timestamp}.png"
@@ -1315,7 +1328,11 @@ def generate_plots(
                 label2="Retained dimension",
                 title=title,
                 colors=colors_cp,
-                alpha=(0.8, 0.4)
+                alpha=(0.8, 0.4),
+                from_beam_search=from_beam_search,
+                min_child_cluster_size=min_child_cluster_size,
+                target_num_clusters=target_num_clusters,
+                initial_basis=initial_basis,
             )
 
             if save:
@@ -1344,7 +1361,11 @@ def generate_plots(
             cluster_sizes=metadata.get("cluster_sizes", "?"),
             max_elec_transfers=max_elec,  # pass the specific integer here
             cost=metadata["cost"],
-            sectors_or_states='states'
+            sectors_or_states='states',
+            from_beam_search=from_beam_search,
+            min_child_cluster_size=min_child_cluster_size,
+            target_num_clusters=target_num_clusters,
+            initial_basis=initial_basis,
         )
         if save:
             filename = f"energy_vs_states_{metadata['cost']}_{timestamp}.png"
@@ -1380,7 +1401,11 @@ def generate_plots(
                 label2="Number of retained state sectors",
                 title=title,
                 colors=colors_cp,
-                alpha=(0.8, 0.4)
+                alpha=(0.8, 0.4),
+                from_beam_search=from_beam_search,
+                min_child_cluster_size=min_child_cluster_size,
+                target_num_clusters=target_num_clusters,
+                initial_basis=initial_basis,
             )
 
             if save:

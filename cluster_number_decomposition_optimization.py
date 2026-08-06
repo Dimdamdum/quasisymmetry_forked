@@ -29,7 +29,7 @@ Algorithm (see Decomposition, run_decomposition_optimizer):
      orbitals, are left untouched) against `cost_function_constructor`.
   3. Keep the best `num_decos` children (by cost) as the new beam.
   4. Repeat until every deco in the beam is down to singleton clusters (or
-     `min_cluster_size`), or `target_num_clusters` is reached.
+     `min_parent_cluster_size`), or `target_num_clusters` is reached.
 
 The discrete part of the search (which cluster to split, how to bisect it) is
 always driven by the cheap 1-/2-RDM covariance structure, independent of
@@ -50,11 +50,17 @@ metrics (sectors or decoupled states-based analysis). Use
 best_decomposition(trajectory, num_clusters=...) to pick one out once
 you know what you're optimizing for.
 
-Other important empirical fact (again, valid for variance cost): at eachr round,
-raw cost prefers splitting the biggest cluster C into (|C| - 1) + 1 subclusters. 
+Other important empirical fact (again, valid for variance cost): at each round,
+raw cost prefers splitting the biggest cluster C into (|C| - 1) + 1 subclusters.
 But again, this preference may not correspond to low values of downstream metrics.
 Therefore, the minimal cluster size and target number of clusters are probably two
-important hyperparameters (CLI options --min-cluster-size and --target-num-clusters).
+important hyperparameters (CLI options --min-parent-cluster-size and --target-num-clusters).
+Note --min-parent-cluster-size only controls which clusters remain eligible to be split
+further -- it does NOT prevent a single split from producing a small subcluster
+(a cluster larger than --min-parent-cluster-size can still be split (|C|-1)+1). To
+directly rule out that pattern (or any subcluster below a given size), use
+--min-child-cluster-size instead: it constrains the split itself, so neither
+resulting subcluster can ever be smaller than the given value.
 
 CLI usage (mirrors cluster_numbers_metrics.py -- runs DMRG via that script's
 own compute_dmrg/extract_rdms, then runs the beam search on the resulting
@@ -63,7 +69,8 @@ RDMs):
     python cluster_number_decomposition_optimization.py h4_square 6-31g 1.0 commutator --num-decos 6 --num-subdecos 8 --fiedler-reorder
 
 Run with --help for the full list of options. Most physically meaningful ones are probably
---min-cluster-size (default: 1)
+(--min-parent-cluster-size (default: 1) )
+--min-child-cluster-size (default: 1)
 --target-num-clusters (default: run down to singleton clusters)
 --initial-basis (default: MOs)
 --fiedler-reorder (on initial basis - default: False)
@@ -90,7 +97,7 @@ elsewhere, or via cluster_numbers_metrics.py's compute_dmrg/extract_rdms):
     #   D, Gamma = extract_rdms(solver, result.mps_tag)
     rdm_data = RDMData(D=D, Gamma=Gamma)
 
-    config = DecompositionOptimizerConfig(num_decos=4, num_subdecos=6, min_cluster_size=2)
+    config = DecompositionOptimizerConfig(num_decos=4, num_subdecos=6, min_parent_cluster_size=2)
     trajectory = run_decomposition_optimizer(make_variance_cost_constructor(), rdm_data, config)
 
     deco = best_decomposition(trajectory, num_clusters=3)
@@ -209,7 +216,8 @@ class DecompositionOptimizerConfig:
 
     num_decos: int = 4  # beam width
     num_subdecos: int = 4  # splits attempted per deco per round
-    min_cluster_size: int = 1  # clusters at or below this size are never split
+    min_parent_cluster_size: int = 1  # clusters at or below this size are never split
+    min_child_cluster_size: int = 1  # neither child of a split may end up smaller than this
     target_num_clusters: int | None = None  # stop once the beam reaches this many clusters
     max_rounds: int | None = None  # extra safety cap on rounds
     maxiter: int = 200  # L-BFGS-B iterations for each per-split local optimization
@@ -224,8 +232,10 @@ class DecompositionOptimizerConfig:
                 "num_subdecos=1: each deco produces only one child per round, so the beam "
                 "never actually selects among alternatives (no real search happening)."
             )
-        if self.min_cluster_size < 1:
-            raise ValueError("min_cluster_size must be >= 1")
+        if self.min_parent_cluster_size < 1:
+            raise ValueError("min_parent_cluster_size must be >= 1")
+        if self.min_child_cluster_size < 1:
+            raise ValueError("min_child_cluster_size must be >= 1")
 
 
 # =============================================================================
@@ -331,16 +341,30 @@ def cluster_variance(n1: np.ndarray, n2: np.ndarray, cluster: list[int]) -> floa
     return float(expected_n_sq - expected_n**2)
 
 
-def fiedler_bipartition(n1: np.ndarray, n2: np.ndarray, cluster: list[int]) -> tuple[list[int], list[int]]:
+def fiedler_bipartition(
+    n1: np.ndarray, n2: np.ndarray, cluster: list[int], min_child_size: int = 1
+) -> tuple[list[int], list[int]]:
     """Split `cluster` into two groups by spectral (Fiedler) bisection of the
     pairwise number-operator covariance graph |Cov(n_p, n_q)|: orbitals whose
     occupations fluctuate together are kept on the same side. This is a cheap
     proxy for "the split that will end up costing the least", used to seed the
-    subsequent continuous optimization over Var(N_V1) + Var(N_V2)."""
+    subsequent continuous optimization over Var(N_V1) + Var(N_V2).
+
+    min_child_size: neither returned group will have fewer than this many
+    orbitals -- the natural spectral cut point is clamped towards the middle
+    just enough to satisfy this (a no-op whenever the natural cut already
+    does, e.g. always at the default min_child_size=1). Raises ValueError if
+    `cluster` is too small for any split to satisfy this
+    (len(cluster) < 2 * min_child_size)."""
     cluster = list(cluster)
     k = len(cluster)
     if k < 2:
         raise ValueError("Cannot split a cluster of size < 2.")
+    if k < 2 * min_child_size:
+        raise ValueError(
+            f"Cannot split a cluster of size {k} into two groups each >= "
+            f"min_child_size={min_child_size} (need size >= {2 * min_child_size})."
+        )
     if k == 2:
         return [cluster[0]], [cluster[1]]
 
@@ -352,23 +376,28 @@ def fiedler_bipartition(n1: np.ndarray, n2: np.ndarray, cluster: list[int]) -> t
 
     if not np.any(W > 1e-12):
         # No resolvable correlation structure: fall back to a balanced index split.
-        half = k // 2
-        return cluster[:half], cluster[half:]
-
-    L = np.diag(W.sum(axis=1)) - W
-    _, evecs = np.linalg.eigh(L)
-    fiedler_vec = evecs[:, 1]  # eigenvector of the second-smallest eigenvalue
-
-    side = fiedler_vec > 0
-    if side.all() or not side.any():
-        # Degenerate/near-zero Fiedler component: fall back to a median split.
+        order = np.arange(k)
+        cut = k // 2
+    else:
+        L = np.diag(W.sum(axis=1)) - W
+        _, evecs = np.linalg.eigh(L)
+        fiedler_vec = evecs[:, 1]  # eigenvector of the second-smallest eigenvalue
         order = np.argsort(fiedler_vec)
-        half = k // 2
-        side = np.zeros(k, dtype=bool)
-        side[order[half:]] = True
 
-    V1 = idx[side].tolist()
-    V2 = idx[~side].tolist()
+        side = fiedler_vec > 0
+        if side.all() or not side.any():
+            # Degenerate/near-zero Fiedler component: fall back to a median split.
+            cut = k // 2
+        else:
+            cut = k - int(side.sum())  # size of the non-positive side, in `order`
+
+    # Clamp the cut so both sides respect min_child_size (a no-op whenever the
+    # natural cut already does).
+    cut = min(max(cut, min_child_size), k - min_child_size)
+
+    cluster_sorted = idx[order]
+    V1 = cluster_sorted[cut:].tolist()
+    V2 = cluster_sorted[:cut].tolist()
     return V1, V2
 
 
@@ -541,12 +570,15 @@ def _split_one_cluster(
     cluster_idx: int,
     cost_function_constructor: CostFunctionConstructor,
     maxiter: int,
+    min_child_cluster_size: int = 1,
 ) -> Decomposition:
-    """Split deco.partition[cluster_idx] via Fiedler bisection and re-optimize
-    the rotation restricted to that cluster's orbitals, starting from deco.U."""
+    """Split deco.partition[cluster_idx] via Fiedler bisection (never leaving
+    either resulting subcluster smaller than min_child_cluster_size) and
+    re-optimize the rotation restricted to that cluster's orbitals, starting
+    from deco.U."""
     norb = rdm_data_cur.norb
     V = deco.partition[cluster_idx]
-    V1, V2 = fiedler_bipartition(n1, n2, V)
+    V1, V2 = fiedler_bipartition(n1, n2, V, min_child_size=min_child_cluster_size)
 
     child_partition = deco.partition[:cluster_idx] + deco.partition[cluster_idx + 1 :] + [V1, V2]
     child_cluster_matrix = partition_to_cluster_matrix(child_partition, norb)
@@ -561,22 +593,39 @@ def _split_one_cluster(
     return Decomposition(partition=child_partition, U=U_child, cost=cost_opt)
 
 
+def _can_split(cluster_size: int, min_parent_cluster_size: int, min_child_cluster_size: int) -> bool:
+    """Whether a cluster of this size is eligible to be split at all: strictly
+    larger than min_parent_cluster_size (else it's already "small enough" and never
+    chosen), and large enough that both children of a split can respect
+    min_child_cluster_size (necessary and sufficient for
+    fiedler_bipartition(..., min_child_size=min_child_cluster_size) to
+    succeed on a cluster of this size)."""
+    return cluster_size > min_parent_cluster_size and cluster_size >= 2 * min_child_cluster_size
+
+
 def expand_decomposition(
     deco: Decomposition,
     rdm_data_ref: RDMData,
     cost_function_constructor: CostFunctionConstructor,
     num_subdecos: int,
-    min_cluster_size: int,
+    min_parent_cluster_size: int,
     maxiter: int,
+    min_child_cluster_size: int = 1,
 ) -> list[Decomposition]:
     """Produce up to `num_subdecos` child decompositions of `deco`: pick the
     (up to num_subdecos) clusters with the largest current number-variance
-    (clusters at or below min_cluster_size are never chosen), and split each
-    independently via _split_one_cluster."""
+    (clusters not satisfying _can_split -- e.g. at or below min_parent_cluster_size,
+    or too small to respect min_child_cluster_size on both sides of a
+    split -- are never chosen), and split each independently via
+    _split_one_cluster."""
     rdm_data_cur = rotate_rdm_data(rdm_data_ref, deco.U)
     n1, n2 = cluster_number_stats(rdm_data_cur, deco.partition)
 
-    splittable = [i for i, c in enumerate(deco.partition) if len(c) > min_cluster_size]
+    splittable = [
+        i
+        for i, c in enumerate(deco.partition)
+        if _can_split(len(c), min_parent_cluster_size, min_child_cluster_size)
+    ]
     if not splittable:
         return []
 
@@ -584,7 +633,10 @@ def expand_decomposition(
     chosen = splittable[:num_subdecos]
 
     return [
-        _split_one_cluster(deco, rdm_data_cur, n1, n2, cluster_idx, cost_function_constructor, maxiter)
+        _split_one_cluster(
+            deco, rdm_data_cur, n1, n2, cluster_idx, cost_function_constructor, maxiter,
+            min_child_cluster_size=min_child_cluster_size,
+        )
         for cluster_idx in chosen
     ]
 
@@ -616,6 +668,24 @@ def _initial_beam(
     return beam
 
 
+def _log_search_stopped(
+    reason: str, round_idx: int, beam: list[Decomposition], config: DecompositionOptimizerConfig
+) -> None:
+    """Log why the beam search's round loop is terminating. If a requested
+    target_num_clusters was not reached, this is worth a warning naming the
+    likely cause (min_parent_cluster_size and/or min_child_cluster_size blocking
+    every remaining cluster) rather than a silent/plain info line."""
+    if config.target_num_clusters is not None and beam[0].num_clusters < config.target_num_clusters:
+        logger.warning(
+            "Round %d: %s (stuck at %d clusters), but target_num_clusters=%d was not reached "
+            "-- likely caused by min_parent_cluster_size=%d and/or min_child_cluster_size=%d.",
+            round_idx, reason, beam[0].num_clusters, config.target_num_clusters,
+            config.min_parent_cluster_size, config.min_child_cluster_size,
+        )
+    else:
+        logger.info("Round %d: %s, stopping.", round_idx, reason)
+
+
 def run_decomposition_optimizer(
     cost_function_constructor: CostFunctionConstructor,
     rdm_data: RDMData,
@@ -631,6 +701,14 @@ def run_decomposition_optimizer(
         config = DecompositionOptimizerConfig()
 
     norb = rdm_data.norb
+    if norb < 2 * config.min_child_cluster_size:
+        logger.warning(
+            "min_child_cluster_size=%d requires at least %d orbitals to perform even one "
+            "split, but norb=%d: the beam search will not be able to split the initial "
+            "single-cluster decomposition at all.",
+            config.min_child_cluster_size, 2 * config.min_child_cluster_size, norb,
+        )
+
     beam = _initial_beam(rdm_data, cost_function_constructor, config.num_decos, initial_bases)
     for deco in beam:
         validate_partition(deco.partition, norb)
@@ -641,7 +719,12 @@ def run_decomposition_optimizer(
     while True:
         if config.target_num_clusters is not None and beam[0].num_clusters >= config.target_num_clusters:
             break
-        if all(len(c) <= config.min_cluster_size for deco in beam for c in deco.partition):
+        if all(
+            not _can_split(len(c), config.min_parent_cluster_size, config.min_child_cluster_size)
+            for deco in beam
+            for c in deco.partition
+        ):
+            _log_search_stopped("no cluster in the beam is splittable further", round_idx, beam, config)
             break
         if config.max_rounds is not None and round_idx >= config.max_rounds:
             break
@@ -651,11 +734,12 @@ def run_decomposition_optimizer(
             candidates.extend(
                 expand_decomposition(
                     deco, rdm_data, cost_function_constructor,
-                    config.num_subdecos, config.min_cluster_size, config.maxiter,
+                    config.num_subdecos, config.min_parent_cluster_size, config.maxiter,
+                    min_child_cluster_size=config.min_child_cluster_size,
                 )
             )
         if not candidates:
-            logger.info("Round %d: no deco could be split further, stopping.", round_idx)
+            _log_search_stopped("no deco could be split further", round_idx, beam, config)
             break
 
         for cand in candidates:
@@ -802,10 +886,13 @@ def _run_dmrg_and_build_rdm_data(
 # cluster_numbers_metrics.py's compute_sector_analysis + generate_plots: it
 # reuses SingleMaxelectransferResult, BasisResult, MetricsOutput,
 # get_ordered_state_projections_in_sectors, get_ordered_decoupled_states,
-# save_metrics and generate_plots from that module UNCHANGED, and
-# get_K_sectors_values_energies /
-# get_K_states_values_energies / plot_energy_vs_K / plot_dual_bar_chart from
-# src.K_sectors_plots UNCHANGED. The only real difference from
+# save_metrics from that module UNCHANGED, and get_K_sectors_values_energies /
+# get_K_states_values_energies from src.K_sectors_plots UNCHANGED. generate_plots
+# (and, through it, plot_energy_vs_K / plot_dual_bar_chart) is called with the
+# additional from_beam_search=True / min_child_cluster_size / target_num_clusters /
+# initial_basis passthrough kwargs, which only add an extra title line -- no
+# other difference from compute_sector_analysis's own call. The only other
+# real difference from
 # compute_sector_analysis is that there ONE cluster_matrix is shared across
 # several orbital bases U (so `sectors` is computed once); here every
 # trajectory entry has its OWN partition, so `sectors` is rebuilt per entry.
@@ -880,7 +967,9 @@ def _compute_sector_analysis_for_trajectory(
                 f"{data_label}: largest cluster has {max_cluster_size} orbitals -- "
                 "diagonalizing its symmetry sector (K-states mode) may be very slow or "
                 "infeasible. Consider --skip-K-states, a narrower --analyze-num-clusters, "
-                "or a larger --min-cluster-size in the search."
+                "or a larger --min-child-cluster-size in the search (--min-parent-cluster-size "
+                "alone only controls split eligibility, not how balanced a split is, so it "
+                "doesn't reliably shrink the largest cluster)."
             )
 
         cluster_matrix = partition_to_cluster_matrix(deco.partition, norb)
@@ -1035,6 +1124,10 @@ def _run_sector_analysis(
             generate_plots(
                 output, plots_dir, max_elec=max_elec, show=args.show_plots, save=True,
                 skip_K_sectors=args.skip_K_sectors, skip_K_states=args.skip_K_states,
+                from_beam_search=True,
+                min_child_cluster_size=args.min_child_cluster_size,
+                target_num_clusters=args.target_num_clusters,
+                initial_basis=args.initial_basis,
             )
 
 
@@ -1109,7 +1202,9 @@ def _plot_trajectory(
     ax.set_ylabel(f"Cost ({metadata['cost']})")
     ax.set_yscale("log")
     ax.set_title(
-        f"{metadata['molecule']} / {metadata['basis_set']}, norb={metadata['norb']}, cost={metadata['cost']}"
+        f"{metadata['molecule']} / {metadata['basis_set']}, norb={metadata['norb']}, cost={metadata['cost']}\n"
+        f"min. child cl. size = {metadata['min_child_cluster_size']}, "
+        f"target num. clusters = {metadata['target_num_clusters']}, in. basis = {metadata['initial_basis']}"
     )
     fig.tight_layout()
 
@@ -1159,8 +1254,16 @@ def create_parser() -> argparse.ArgumentParser:
         "--num-subdecos", type=int, default=4, help="Splits attempted per deco per round (default: 4)"
     )
     parser.add_argument(
-        "--min-cluster-size", type=int, default=1,
+        "--min-parent-cluster-size", type=int, default=1,
         help="Clusters at or below this size are never split (default: 1)",
+    )
+    parser.add_argument(
+        "--min-child-cluster-size", type=int, default=1,
+        help=(
+            "Never split a cluster if either resulting subcluster would have fewer than this "
+            "many orbitals -- unlike --min-parent-cluster-size, this constrains the split itself, not "
+            "just which clusters are eligible to be split (default: 1, i.e. no extra restriction)"
+        ),
     )
     parser.add_argument(
         "--target-num-clusters", type=int, default=None,
@@ -1244,7 +1347,8 @@ def main() -> None:
     logger.info(f"Starting joint decomposition optimization for {args.molecule} in {args.basis_set} basis set")
     logger.info(
         f"cost function={args.cost_function}, num_decos={args.num_decos}, "
-        f"num_subdecos={args.num_subdecos}, min_cluster_size={args.min_cluster_size}"
+        f"num_subdecos={args.num_subdecos}, min_parent_cluster_size={args.min_parent_cluster_size}, "
+        f"min_child_cluster_size={args.min_child_cluster_size}"
     )
     if args.bond_angle is not None:
         logger.info(f"Bond angle={args.bond_angle}")
@@ -1261,7 +1365,8 @@ def main() -> None:
         opt_config = DecompositionOptimizerConfig(
             num_decos=args.num_decos,
             num_subdecos=args.num_subdecos,
-            min_cluster_size=args.min_cluster_size,
+            min_parent_cluster_size=args.min_parent_cluster_size,
+            min_child_cluster_size=args.min_child_cluster_size,
             target_num_clusters=args.target_num_clusters,
             max_rounds=args.max_rounds,
             maxiter=args.maxiter,
@@ -1293,7 +1398,8 @@ def main() -> None:
             "norb": norb,
             "num_decos": args.num_decos,
             "num_subdecos": args.num_subdecos,
-            "min_cluster_size": args.min_cluster_size,
+            "min_parent_cluster_size": args.min_parent_cluster_size,
+            "min_child_cluster_size": args.min_child_cluster_size,
             "target_num_clusters": args.target_num_clusters,
             "initial_basis": args.initial_basis,
             "fiedler_reorder": args.fiedler_reorder,
