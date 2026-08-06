@@ -1,0 +1,62 @@
+{
+  "args": {
+    "input_data": "/home/alexey/Documents/work/2026/quasisymmetry/oo_h2o_minimal/OO_H2O_OH2.5000_104.5000.chk_20260710_174127_34ef55.json"
+  },
+  "OO_data": {
+    "molpath": "hamiltonians/water/H2O_OH2.5000_104.5000.chk",
+    "parity": "hamiltonians/water/parity_water_2.500.txt",
+    "seniority": false,
+    "reference": "hf",
+    "cost_function": "variance",
+    "x0": null,
+    "fixed_sector": null,
+    "optimizer_maxiter": 100,
+    "sector_switch_maxiter": 5,
+    "verbose": false,
+    "outname": null,
+    "output_fcidump": null,
+    "orbene_npy": null,
+    "cost_before": 0.0,
+    "cost_after": 0.0,
+    "converged": true,
+    "nit": 0,
+    "nfev": 22,
+    "elapsed": 0.149810791015625,
+    "message": "CONVERGENCE: NORM OF PROJECTED GRADIENT <= PGTOL",
+    "rotation": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "E_FCI": -74.74059586835911,
+  "Eckart": 3.419500690859688e-05,
+  "used_sectors_weights_dims": {
+    "(0, 0, 0, 0, 0)": [
+      0.9999114577332008,
+      47
+    ],
+    "(0, 1, 0, 1, 0)": [
+      8.826835411588305e-05,
+      32
+    ]
+  }
+}

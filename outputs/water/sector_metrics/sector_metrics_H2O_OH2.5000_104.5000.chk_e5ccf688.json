@@ -1,0 +1,99 @@
+{
+  "args": {
+    "input_data": "/home/alexey/Documents/work/2026/quasisymmetry/oo_h2o_minimal/OO_H2O_OH2.5000_104.5000.chk_20260710_173722_29f908.json"
+  },
+  "OO_data": {
+    "molpath": "hamiltonians/water/H2O_OH2.5000_104.5000.chk",
+    "parity": "hamiltonians/water/parity_7_sens.txt",
+    "seniority": false,
+    "reference": "fci",
+    "cost_function": "switching_sector",
+    "x0": null,
+    "fixed_sector": null,
+    "optimizer_maxiter": 100,
+    "sector_switch_maxiter": 5,
+    "verbose": false,
+    "outname": null,
+    "output_fcidump": null,
+    "orbene_npy": null,
+    "cost_before": -74.73489672116165,
+    "cost_after": -74.73518717143902,
+    "converged": true,
+    "nit": 4,
+    "nfev": 154,
+    "elapsed": 46.75017523765564,
+    "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+    "switching_history": [
+      {
+        "start_sector": [
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          1
+        ],
+        "start_energy": -74.73489672116165,
+        "optimized_energy": -74.73518717143902,
+        "best_sector_after_rescan": [
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          1
+        ],
+        "best_energy_after_rescan": -74.73518717143902
+      }
+    ],
+    "rotation": [
+      1.0051196124256994e-06,
+      -1.6857565446469654e-05,
+      1.8528660622501153e-08,
+      5.087506189962187e-05,
+      3.653445834695133e-07,
+      1.5027709117723675e-07,
+      -3.322245668268329e-07,
+      6.80784073298124e-08,
+      -0.0012312190777354125,
+      -1.1893741075266006e-06,
+      -2.6348765968638777e-06,
+      -1.625379843491307e-06,
+      -0.025098238989572558,
+      -4.423083292806136e-06,
+      -4.6736166489507384e-06,
+      -1.539509279746398e-06,
+      -9.10815541779387e-06,
+      -3.2547841974047893e-06,
+      -5.107734541973087e-07,
+      -3.145872530522315e-07,
+      -3.2059448622514883e-06
+    ]
+  },
+  "E_FCI": -74.74059586835911,
+  "Eckart": 3.419500690859688e-05,
+  "used_sectors_weights_dims": {
+    "(0, 0, 0, 0, 0, 0, 0)": [
+      0.001560235546577887,
+      21
+    ],
+    "(0, 0, 0, 1, 0, 1, 0)": [
+      0.012872622805655373,
+      10
+    ],
+    "(0, 0, 1, 0, 1, 0, 0)": [
+      0.06201984695675709,
+      10
+    ],
+    "(0, 0, 1, 1, 1, 1, 0)": [
+      0.9234792034211088,
+      6
+    ],
+    "(0, 1, 1, 1, 0, 1, 0)": [
+      5.91951364453073e-05,
+      6
+    ]
+  }
+}

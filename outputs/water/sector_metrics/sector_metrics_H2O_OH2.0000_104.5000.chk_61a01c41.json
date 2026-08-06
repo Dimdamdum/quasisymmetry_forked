@@ -1,0 +1,70 @@
+{
+  "args": {
+    "input_data": "/home/alexey/Documents/work/2026/quasisymmetry/oo_h2o_minimal/OO_H2O_OH2.0000_104.5000.chk_20260710_164208_468dbb.json"
+  },
+  "OO_data": {
+    "molpath": "hamiltonians/water/H2O_OH2.0000_104.5000.chk",
+    "parity": "hamiltonians/water/parity_water_2.000.txt",
+    "seniority": false,
+    "reference": "hf",
+    "cost_function": "NC",
+    "x0": null,
+    "fixed_sector": null,
+    "optimizer_maxiter": 100,
+    "sector_switch_maxiter": 5,
+    "verbose": false,
+    "outname": null,
+    "output_fcidump": null,
+    "orbene_npy": null,
+    "cost_before": 0.039201976994508905,
+    "cost_after": 0.0038278421906036016,
+    "converged": true,
+    "nit": 51,
+    "nfev": 1298,
+    "elapsed": 424.7564618587494,
+    "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+    "rotation": [
+      -0.23974738037383334,
+      3.8681641469357986e-08,
+      0.020643432020339494,
+      -1.6626960487427852e-07,
+      -6.848352316884213e-05,
+      1.337965728380506e-07,
+      3.099251378915599e-08,
+      -0.15452631552255083,
+      8.808162249624471e-07,
+      0.0006684421439816624,
+      -1.4605772835243078e-06,
+      -2.9543281992235223e-07,
+      -3.829582374538673e-08,
+      3.506410363485369e-07,
+      -1.3832208867920538e-08,
+      6.969537873862633e-07,
+      0.009299597299251257,
+      -2.253871073087597e-05,
+      1.7353090870790934e-06,
+      -3.700447929372024e-08,
+      4.444764361355293e-07
+    ]
+  },
+  "E_FCI": -74.76198842498664,
+  "Eckart": 3.430304718024447e-05,
+  "used_sectors_weights_dims": {
+    "(0, 0, 0, 0, 0)": [
+      0.9893456983249704,
+      47
+    ],
+    "(0, 1, 0, 0, 1)": [
+      0.009929829139994822,
+      32
+    ],
+    "(1, 0, 0, 0, 1)": [
+      0.0006890448394023004,
+      32
+    ],
+    "(1, 1, 0, 0, 0)": [
+      3.542689419963419e-05,
+      22
+    ]
+  }
+}

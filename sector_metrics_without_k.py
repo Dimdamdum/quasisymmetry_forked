@@ -94,7 +94,7 @@ if __name__ == "__main__":
                                pyscf.ao2mo.restore(1, dumpdata["H2"], dumpdata["NORB"]),
                                occ_top)
                     + dumpdata["ECORE"])
-    print(e_max_approx)
+    print("Anti-Aufbau energy ", e_max_approx)
 
     approx_eckart_epsilon = chemistry.CHEMICAL_PRECISION / (e_max_approx - e_ref)
 
@@ -121,13 +121,25 @@ if __name__ == "__main__":
     for i, cumweight in enumerate(cumulative_weights):
         if cumweight > 1 - approx_eckart_epsilon:
             print("Sector count", i)
-            K = i
+            K = i + 1
             break
 
-    print("Used sectors and their weights:")
     used_sector_indices = order[:K]
+    used_sectors_data = {}
     for i, (k, v) in enumerate(sector_weights.items()):
         if i in used_sector_indices:
-            print(k, v)
+            # print(k, v)
+            used_sectors_data[str(k)] = (v, len(sectors[k]))
 
+    out_data = {"args": vars(args),
+                "OO_data": input_data,
+                "E_FCI": e_ref,
+                "Eckart": approx_eckart_epsilon,
+                "used_sectors_weights_dims": used_sectors_data}
+
+    p = Path(input_data["molpath"])
+    outname = "sector_metrics_" + p.parts[-1] + "_" + str(uuid4())[:8] + ".json"
+
+    with open(outname, "a") as fp:
+        json.dump(out_data, fp, indent=2)
 

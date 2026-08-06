@@ -1,0 +1,86 @@
+{
+  "args": {
+    "input_data": "/home/alexey/Documents/work/2026/quasisymmetry/oo_h2o_minimal/OO_H2O_OH1.6430_104.5000.chk_20260710_150802_13ac14.json"
+  },
+  "OO_data": {
+    "molpath": "hamiltonians/water/H2O_OH1.6430_104.5000.chk",
+    "parity": "hamiltonians/water/parity_7_sens.txt",
+    "seniority": false,
+    "reference": "fci",
+    "cost_function": "fixed_sector",
+    "x0": null,
+    "fixed_sector": null,
+    "optimizer_maxiter": 0,
+    "sector_switch_maxiter": 5,
+    "verbose": false,
+    "outname": null,
+    "output_fcidump": null,
+    "orbene_npy": null,
+    "cost_before": -74.72867658867278,
+    "cost_after": -74.72867658867278,
+    "converged": false,
+    "nit": 0,
+    "nfev": 0,
+    "elapsed": 0,
+    "message": "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT",
+    "rotation": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "E_FCI": -74.82786841956916,
+  "Eckart": 3.43547373010825e-05,
+  "used_sectors_weights_dims": {
+    "(0, 0, 0, 0, 0, 0, 0)": [
+      0.8791442667318643,
+      21
+    ],
+    "(0, 0, 0, 0, 1, 1, 0)": [
+      0.0033642407034223253,
+      10
+    ],
+    "(0, 1, 0, 0, 0, 1, 0)": [
+      0.0008785656823514769,
+      10
+    ],
+    "(0, 0, 0, 1, 0, 0, 1)": [
+      7.652129656603106e-05,
+      10
+    ],
+    "(0, 0, 0, 1, 1, 1, 1)": [
+      0.11341246094594379,
+      6
+    ],
+    "(0, 1, 0, 1, 0, 1, 1)": [
+      0.0009218668934987519,
+      6
+    ],
+    "(0, 1, 0, 0, 1, 0, 0)": [
+      0.0021234722667313995,
+      10
+    ],
+    "(0, 1, 0, 1, 1, 0, 1)": [
+      7.745668292654996e-05,
+      6
+    ]
+  }
+}

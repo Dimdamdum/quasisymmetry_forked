@@ -1,0 +1,83 @@
+{
+  "args": {
+    "input_data": "/home/alexey/Documents/work/2026/quasisymmetry/oo_h2o_minimal/OO_H2O_OH1.6430_104.5000.chk_20260710_154000_60d3a5.json"
+  },
+  "OO_data": {
+    "molpath": "hamiltonians/water/H2O_OH1.6430_104.5000.chk",
+    "parity": "hamiltonians/water/parity_water_1.643.txt",
+    "seniority": false,
+    "reference": "fci",
+    "cost_function": "switching_sector",
+    "x0": null,
+    "fixed_sector": null,
+    "optimizer_maxiter": 100,
+    "sector_switch_maxiter": 5,
+    "verbose": false,
+    "outname": null,
+    "output_fcidump": null,
+    "orbene_npy": null,
+    "cost_before": -74.82156504050725,
+    "cost_after": -74.82741419992446,
+    "converged": true,
+    "nit": 18,
+    "nfev": 484,
+    "elapsed": 480.00077748298645,
+    "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+    "switching_history": [
+      {
+        "start_sector": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "start_energy": -74.82156504050725,
+        "optimized_energy": -74.82741419992446,
+        "best_sector_after_rescan": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "best_energy_after_rescan": -74.82741419992446
+      }
+    ],
+    "rotation": [
+      -0.02657323381870183,
+      0.00011404927007254922,
+      -8.427322428058276e-07,
+      0.0006559686652280759,
+      -0.00040363243281473215,
+      -2.47179180238131e-05,
+      1.3572757824302258e-05,
+      5.0034340228647693e-05,
+      -0.09779150542830298,
+      0.02768385892612374,
+      -4.424293260234001e-05,
+      4.005785894116941e-05,
+      2.8683266799956297e-05,
+      1.3606915864644093e-05,
+      -1.9306642480860456e-05,
+      -6.103526102352606e-05,
+      -9.699247819547437e-05,
+      -8.946158965371328e-06,
+      0.0015487770899385435,
+      7.589455455755274e-06,
+      4.043217512517496e-05
+    ]
+  },
+  "E_FCI": -74.82786841956916,
+  "Eckart": 3.43547373010825e-05,
+  "used_sectors_weights_dims": {
+    "(0, 0, 0, 0, 0)": [
+      0.999701818685894,
+      47
+    ],
+    "(0, 1, 0, 0, 1)": [
+      0.000297986989289511,
+      32
+    ]
+  }
+}

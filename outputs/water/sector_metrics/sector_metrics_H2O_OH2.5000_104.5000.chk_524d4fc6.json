@@ -1,0 +1,79 @@
+{
+  "args": {
+    "input_data": "/home/alexey/Documents/work/2026/quasisymmetry/oo_h2o_minimal/OO_H2O_OH2.5000_104.5000.chk_20260710_175226_6c7339.json"
+  },
+  "OO_data": {
+    "molpath": "hamiltonians/water/H2O_OH2.5000_104.5000.chk",
+    "parity": "hamiltonians/water/parity_water_2.500.txt",
+    "seniority": false,
+    "reference": "fci",
+    "cost_function": "switching_sector",
+    "x0": null,
+    "fixed_sector": null,
+    "optimizer_maxiter": 100,
+    "sector_switch_maxiter": 5,
+    "verbose": false,
+    "outname": null,
+    "output_fcidump": null,
+    "orbene_npy": null,
+    "cost_before": -74.74045793497862,
+    "cost_after": -74.74058266923242,
+    "converged": true,
+    "nit": 4,
+    "nfev": 132,
+    "elapsed": 103.4283995628357,
+    "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+    "switching_history": [
+      {
+        "start_sector": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "start_energy": -74.74045793497862,
+        "optimized_energy": -74.74058266923242,
+        "best_sector_after_rescan": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "best_energy_after_rescan": -74.74058266923242
+      }
+    ],
+    "rotation": [
+      -2.7797226152827068e-05,
+      1.7340698761725711e-06,
+      -8.843066310231944e-08,
+      -9.519497041084058e-05,
+      -2.344254758039392e-07,
+      -2.328155256728085e-06,
+      -0.0002833120888524088,
+      -1.5306842955026898e-06,
+      -0.008915391649769384,
+      -1.91214356706652e-06,
+      -1.9835774153745976e-06,
+      -3.0495266803236877e-06,
+      -3.506389617520845e-06,
+      -3.551324192210726e-06,
+      -3.312785765969236e-06,
+      -2.452785353594345e-06,
+      -2.841291588955919e-06,
+      -3.0817942147731766e-06,
+      -1.6730385263908016e-06,
+      -2.2528033846556173e-06,
+      -3.341781130802546e-07
+    ]
+  },
+  "E_FCI": -74.74059586835911,
+  "Eckart": 3.419500690859688e-05,
+  "used_sectors_weights_dims": {
+    "(0, 0, 0, 0, 0)": [
+      0.9999902709356376,
+      47
+    ]
+  }
+}
