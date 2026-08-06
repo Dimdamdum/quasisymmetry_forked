@@ -12,8 +12,8 @@ over cluster splits combined with continuous orbital-rotation optimization
 
 The object being optimized is a decomposition deco = (P, U):
   - P: a partition of range(norb) into clusters (list of lists of orbital
-    indices) -- which orbitals are grouped into which cluster-number
-    quasisymmetry generator.
+    indices) -- which orbitals are grouped into which cluster (each cluster
+    defines a quasisymmetry operator, i.e. the number operator for that cluster).
   - U: a norb x norb orthogonal matrix, the orbital basis relative to a fixed
     reference basis (e.g. MOs or NatOs).
 
@@ -41,21 +41,38 @@ another cheap, 1-/2-RDM-only cost) to drive the search itself, and reserve
 make_commutator_cost_constructor for polish_decomposition on the trajectory
 endpoint(s) you actually care about.
 
-`run_decomposition_optimizer` returns the full trajectory (best decomposition
-per cluster count) rather than a single winner: the raw cost generally favors
-more/smaller clusters (a partition into singletons trivially has zero
-variance), so which point on that trajectory is "best" depends on a downstream
-metric outside this module's scope (e.g. cluster_numbers_metrics.py's
-K-sectors analysis) -- use best_decomposition(trajectory, num_clusters=...) to
-pick one out once you know what you're optimizing for.
+`run_decomposition_optimizer` returns the full "trajectory" (one winner decomposition
+per cluster count) rather than a single winner. This is useful for
+the following empirical fact (valid for variance cost). The raw cost
+turns out to favor fewer clusters, but fewer clusters result in large sectors,
+so which point on the trajectory is "best" really depends on the downstream
+metrics (sectors or decoupled states-based analysis). Use
+best_decomposition(trajectory, num_clusters=...) to pick one out once
+you know what you're optimizing for.
+
+Other important empirical fact (again, valid for variance cost): at eachr round,
+raw cost prefers splitting the biggest cluster C into (|C| - 1) + 1 subclusters. 
+But again, this preference may not correspond to low values of downstream metrics.
+Therefore, the minimal cluster size and target number of clusters are probably two
+important hyperparameters (CLI options --min-cluster-size and --target-num-clusters).
 
 CLI usage (mirrors cluster_numbers_metrics.py -- runs DMRG via that script's
 own compute_dmrg/extract_rdms, then runs the beam search on the resulting
 RDMs):
     python cluster_number_decomposition_optimization.py h2o sto-3g 2.0 variance --bond-angle 104.5
-    python cluster_number_decomposition_optimization.py h4_square 6-31g 1.0 commutator --num-decos 6 --num-subdecos 8
+    python cluster_number_decomposition_optimization.py h4_square 6-31g 1.0 commutator --num-decos 6 --num-subdecos 8 --fiedler-reorder
 
-Run with --help for the full list of options.
+Run with --help for the full list of options. Most physically meaningful ones are probably
+--min-cluster-size (default: 1)
+--target-num-clusters (default: run down to singleton clusters)
+--initial-basis (default: MOs)
+--fiedler-reorder (on initial basis - default: False)
+--max-transfers (default: 1 2 3)
+Main hyperparameters are probably
+--bond-dim (default: 150)
+--n-sweeps (default: 50)
+--num-decos (default: 4)
+--num-subdecos (default: 4)
 
 Library usage (skips DMRG entirely -- bring your own RDMs, e.g. computed
 elsewhere, or via cluster_numbers_metrics.py's compute_dmrg/extract_rdms):
@@ -89,7 +106,7 @@ Unless --skip-sector-analysis is passed, each "winner" decomposition (each
 trajectory entry, polished if enabled) additionally gets a full K-sectors /
 K-states sector analysis, using cluster_numbers_metrics.py's OWN
 compute_sector_analysis-equivalent logic, get_K_sectors_values_energies /
-get_K_states_values_energies, save_metrics and generate_plots verbatim -- the
+get_K_states_values_energies, save_metrics and generate_plots verbatim. The
 only difference from cluster_numbers_metrics.py's version is that there each
 curve is a different orbital basis U for one FIXED cluster_matrix, while here
 each curve is a different trajectory entry, each with its OWN cluster_matrix
@@ -1164,7 +1181,7 @@ def create_parser() -> argparse.ArgumentParser:
         help="Skip the full joint-rotation polish step on each trajectory entry",
     )
     parser.add_argument(
-        "--polish-maxiter", type=int, default=300, help="L-BFGS-B iterations for polishing (default: 300)"
+        "--polish-maxiter", type=int, default=500, help="L-BFGS-B iterations for polishing (default: 500)"
     )
 
     # Sector analysis (K-sectors / K-states) for selected trajectory entries,

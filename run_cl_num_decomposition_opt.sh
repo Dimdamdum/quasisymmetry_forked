@@ -2,8 +2,8 @@
 #SBATCH --job-name=decomp_opt
 #SBATCH --output=logs/cluster_decomp_opt_%A_%a.out
 #SBATCH --error=logs/cluster_decomp_opt_%A_%a.err
-#SBATCH --time=04:00:00
-#SBATCH --array=0-8
+#SBATCH --time=10:00:00
+#SBATCH --array=0-2
 #SBATCH --partition cluster
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
@@ -15,10 +15,8 @@ export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
-# 2. Fix Intel MKL shared library loading and CPU detection on compute nodes
-export LD_LIBRARY_PATH="/project/theorie/d/Damiano.Aliverti/quasisymmetry_forked/quasisym/lib/python3.11/site-packages/mkl/lib/intel64:/project/theorie/d/Damiano.Aliverti/quasisymmetry_forked/quasisym/lib/python3.11/site-packages/block2.libs:$LD_LIBRARY_PATH"
-export MKL_DEBUG_CPU_TYPE=5
-export MKL_ENABLE_INSTRUCTIONS=AVX2
+# 2. Bypass Intel MKL CPU vendor lock-in for AMD EPYC nodes
+export LD_PRELOAD="/project/theorie/d/Damiano.Aliverti/quasisymmetry_forked/libfakeintel.so"
 # # # block2-related fixes: end # # #
 
 source quasisym/bin/activate
@@ -37,10 +35,21 @@ source quasisym/bin/activate
 # so the system was downgraded instead. N2/sto-3g (dim 14,400) and LiH/6-31g
 # (dim 3,025) stay three orders of magnitude below that and are safe even in
 # the worst case of one dominant sector.
-molecules=(   n2      n2      n2      lih     lih     lih     h2o     h2o     h2o    )
-bases=(       sto-3g  sto-3g  sto-3g  6-31g   6-31g   6-31g   sto-3g  sto-3g  sto-3g )
-bondlengths=( 1.10    1.80    2.50    1.60    2.50    4.00    0.96    1.50    2.00   )
-angles=(      ""      ""      ""      ""      ""      ""      104.5   104.5   104.5  )
+
+# molecules=(   n2      n2      n2      lih     lih     lih     h2o     h2o     h2o    )
+# bases=(       sto-3g  sto-3g  sto-3g  6-31g   6-31g   6-31g   sto-3g  sto-3g  sto-3g )
+# bondlengths=( 1.10    1.80    2.50    1.60    2.50    4.00    0.96    1.50    2.00   )
+# angles=(      ""      ""      ""      ""      ""      ""      104.5   104.5   104.5  )
+
+molecules=(   h2o     h2o     h2o    )
+bases=(       6-31g   6-31g   6-31g  )
+bondlengths=( 0.96    1.50    2.00   )
+angles=(      104   104   104  )
+
+# molecules=(   h4_square     h4_square     h4_square    )
+# bases=(       6-311++g   6-311++g   6-311++g  )
+# bondlengths=( 0.50    1.50    2.00   )
+# angles=(      ""   ""   ""  )
 
 molecule="${molecules[$SLURM_ARRAY_TASK_ID]}"
 basis="${bases[$SLURM_ARRAY_TASK_ID]}"
@@ -59,4 +68,4 @@ fi
 # chosen winner afterward, not for a broad first look.
 python cluster_number_decomposition_optimization.py "$molecule" "$basis" "$bondlength" variance \
     "${OPT_ARGS[@]}" \
-    --initial-basis both
+    --initial-basis both --skip-K-states --verbose --target-num-clusters 6
