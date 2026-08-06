@@ -73,4 +73,4 @@ fi
 # chosen winner afterward, not for a broad first look.
 python cluster_number_decomposition_optimization.py "$molecule" "$basis" "$bondlength" variance \
     "${OPT_ARGS[@]}" \
-    --initial-basis both --skip-K-states --min-child-cluster-size 2 --output-dir outputs_TEMP_min_cluster_size_2 --plots-dir plots_TEMP_min_cluster_size_3
+    --initial-basis both --skip-K-states --min-child-cluster-size 2 --output-dir outputs_TEMP_min_child_cluster_size_2 --plots-dir plots_TEMP_min_child_cluster_size_2
