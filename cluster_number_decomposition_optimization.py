@@ -73,6 +73,9 @@ Main hyperparameters are probably
 --n-sweeps (default: 50)
 --num-decos (default: 4)
 --num-subdecos (default: 4)
+and possibly the orbital optimization max iterations
+--maxiter (default: 200)
+--polish-maxiter (default: 500)
 
 Library usage (skips DMRG entirely -- bring your own RDMs, e.g. computed
 elsewhere, or via cluster_numbers_metrics.py's compute_dmrg/extract_rdms):
@@ -1063,6 +1066,8 @@ def _trajectory_to_json(
 ) -> list[dict]:
     entries = []
     for i, deco in enumerate(trajectory):
+        if deco.num_clusters == 1:
+            continue
         entry = {
             "num_clusters": deco.num_clusters,
             "cluster_sizes": [len(c) for c in deco.partition],
@@ -1091,13 +1096,14 @@ def _plot_trajectory(
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    xs = [d.num_clusters for d in trajectory]
-    ys = [d.cost for d in trajectory]
+    xs = [d.num_clusters for d in trajectory if d.num_clusters > 1]
+    ys = [d.cost for d in trajectory if d.num_clusters > 1]
 
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(xs, ys, "o-", label="beam search")
     if polished_trajectory is not None:
-        ax.plot(xs, [d.cost for d in polished_trajectory], "s--", label="polished")
+        ys_polished = [d.cost for d in polished_trajectory if d.num_clusters > 1]
+        ax.plot(xs, ys_polished, "s--", label="polished")
         ax.legend()
     ax.set_xlabel("Number of clusters")
     ax.set_ylabel(f"Cost ({metadata['cost']})")

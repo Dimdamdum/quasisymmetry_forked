@@ -3,10 +3,11 @@
 #SBATCH --output=logs/cluster_decomp_opt_%A_%a.out
 #SBATCH --error=logs/cluster_decomp_opt_%A_%a.err
 #SBATCH --time=10:00:00
-#SBATCH --array=0-2
+#SBATCH --array=0-0
 #SBATCH --partition cluster
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
+#SBATCH --exclude=th-cl-uv203
 
 # # # block2-related fixes: start # # #
 # 1. Prevent thread oversubscription / hangs when using 1 CPU core
@@ -17,6 +18,15 @@ export VECLIB_MAXIMUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 # 2. Bypass Intel MKL CPU vendor lock-in for AMD EPYC nodes
 export LD_PRELOAD="/project/theorie/d/Damiano.Aliverti/quasisymmetry_forked/libfakeintel.so"
+# 3. Force MKL to use the AVX2 kernel directly, bypassing runtime CPU dispatch
+#    (avoids mis-detection on certain AMD EPYC steppings after the vendor spoof)
+export MKL_ENABLE_INSTRUCTIONS=AVX2
+# 4. Check and print whether the node has avx2
+if grep -q 'avx2' /proc/cpuinfo; then
+    echo "AVX2 check: SUPPORTED on node $(hostname). No action needed"
+else
+    echo "AVX2 check: NOT SUPPORTED on node $(hostname) -> add to excluded nodes at the top of the .sh script"
+fi
 # # # block2-related fixes: end # # #
 
 source quasisym/bin/activate
@@ -41,10 +51,10 @@ source quasisym/bin/activate
 # bondlengths=( 1.10    1.80    2.50    1.60    2.50    4.00    0.96    1.50    2.00   )
 # angles=(      ""      ""      ""      ""      ""      ""      104.5   104.5   104.5  )
 
-molecules=(   h2o     h2o     h2o    )
-bases=(       6-31g   6-31g   6-31g  )
-bondlengths=( 0.96    1.50    2.00   )
-angles=(      104   104   104  )
+molecules=(   h2o    )
+bases=(       6-31g  )
+bondlengths=(  2.00   )
+angles=(     104  )
 
 # molecules=(   h4_square     h4_square     h4_square    )
 # bases=(       6-311++g   6-311++g   6-311++g  )
@@ -68,4 +78,4 @@ fi
 # chosen winner afterward, not for a broad first look.
 python cluster_number_decomposition_optimization.py "$molecule" "$basis" "$bondlength" variance \
     "${OPT_ARGS[@]}" \
-    --initial-basis both --skip-K-states --verbose --target-num-clusters 6
+    --initial-basis both --skip-K-states --min-cluster-size 3 --output-dir outputs_TEMP_min_cluster_size_3 --plots-dir plots_TEMP_min_cluster_size_3
