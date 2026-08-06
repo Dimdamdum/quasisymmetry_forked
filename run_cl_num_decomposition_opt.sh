@@ -3,7 +3,7 @@
 #SBATCH --output=logs/cluster_decomp_opt_%A_%a.out
 #SBATCH --error=logs/cluster_decomp_opt_%A_%a.err
 #SBATCH --time=10:00:00
-#SBATCH --array=0-0
+#SBATCH --array=0-2
 #SBATCH --partition cluster
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
@@ -46,15 +46,10 @@ source quasisym/bin/activate
 # (dim 3,025) stay three orders of magnitude below that and are safe even in
 # the worst case of one dominant sector.
 
-# molecules=(   n2      n2      n2      lih     lih     lih     h2o     h2o     h2o    )
-# bases=(       sto-3g  sto-3g  sto-3g  6-31g   6-31g   6-31g   sto-3g  sto-3g  sto-3g )
-# bondlengths=( 1.10    1.80    2.50    1.60    2.50    4.00    0.96    1.50    2.00   )
-# angles=(      ""      ""      ""      ""      ""      ""      104.5   104.5   104.5  )
-
-molecules=(   h2o    )
-bases=(       6-31g  )
-bondlengths=(  2.00   )
-angles=(     104  )
+molecules=(   h2o     h2o     h2o    )
+bases=(       sto-3g  sto-3g  sto-3g )
+bondlengths=( 0.96    1.50    2.00   )
+angles=(      104.5   104.5   104.5  )
 
 # molecules=(   h4_square     h4_square     h4_square    )
 # bases=(       6-311++g   6-311++g   6-311++g  )
@@ -78,4 +73,4 @@ fi
 # chosen winner afterward, not for a broad first look.
 python cluster_number_decomposition_optimization.py "$molecule" "$basis" "$bondlength" variance \
     "${OPT_ARGS[@]}" \
-    --initial-basis both --skip-K-states --min-cluster-size 3 --output-dir outputs_TEMP_min_cluster_size_3 --plots-dir plots_TEMP_min_cluster_size_3
+    --initial-basis both --skip-K-states --min-child-cluster-size 2 --output-dir outputs_TEMP_min_cluster_size_2 --plots-dir plots_TEMP_min_cluster_size_3

@@ -13,6 +13,7 @@ test_cluster_number_operators.py:TestNumberCostFunctions -- these tests are
 about the algebra, not about physical accuracy.
 """
 
+import logging
 import shutil
 import sys
 import tempfile
@@ -43,6 +44,7 @@ from cluster_number_decomposition_optimization import (
     run_decomposition_optimizer,
     polish_decomposition,
     best_decomposition,
+    _can_split,
     _split_one_cluster,
 )
 from src.cluster_number_operators import number_variance_cost
@@ -141,6 +143,32 @@ def test_validate_partition_rejects_invalid(partition):
 
 
 # =============================================================================
+# Split eligibility (_can_split)
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "cluster_size,min_parent_cluster_size,min_child_cluster_size,expected",
+    [
+        (5, 1, 1, True),
+        (2, 1, 2, False),  # too small to give both children >= 2
+        (4, 1, 2, True),
+        (1, 1, 1, False),  # not > min_parent_cluster_size
+        (3, 3, 1, False),  # not > min_parent_cluster_size
+        (6, 1, 3, True),  # exactly 2 * min_child_cluster_size
+        (5, 1, 3, False),  # 5 < 2 * 3
+    ],
+)
+def test_can_split(cluster_size, min_parent_cluster_size, min_child_cluster_size, expected):
+    assert _can_split(cluster_size, min_parent_cluster_size, min_child_cluster_size) == expected
+
+
+def test_config_rejects_invalid_min_child_cluster_size():
+    with pytest.raises(ValueError):
+        DecompositionOptimizerConfig(min_child_cluster_size=0)
+
+
+# =============================================================================
 # Fiedler splitting and cluster statistics
 # =============================================================================
 
@@ -161,6 +189,22 @@ class TestClusterStatsAndFiedler:
             assert set(V1) | set(V2) == set(cluster)
             assert set(V1) & set(V2) == set()
             assert len(V1) > 0 and len(V2) > 0
+
+    @pytest.mark.parametrize("min_child_size", [1, 2, 3])
+    def test_fiedler_bipartition_respects_min_child_size(self, rdm_data, min_child_size):
+        partition = [list(range(self.norb))]
+        n1, n2 = cluster_number_stats(rdm_data, partition)
+        cluster = [0, 1, 2, 3, 4, 5]
+        V1, V2 = fiedler_bipartition(n1, n2, cluster, min_child_size=min_child_size)
+        assert set(V1) | set(V2) == set(cluster)
+        assert set(V1) & set(V2) == set()
+        assert len(V1) >= min_child_size and len(V2) >= min_child_size
+
+    def test_fiedler_bipartition_raises_when_too_small_for_min_child_size(self, rdm_data):
+        partition = [list(range(self.norb))]
+        n1, n2 = cluster_number_stats(rdm_data, partition)
+        with pytest.raises(ValueError):
+            fiedler_bipartition(n1, n2, [0, 1, 2, 3], min_child_size=3)  # 4 < 2*3
 
     def test_cluster_variance_matches_number_variance_cost(self, rdm_data):
         # At the identity rotation, cluster_variance (built from
@@ -185,6 +229,21 @@ class TestClusterStatsAndFiedler:
         assert np.allclose(U @ U.T, np.eye(self.norb))
         assert np.allclose(U.sum(axis=0), 1.0)
         assert np.allclose(U.sum(axis=1), 1.0)
+
+
+def test_fiedler_bipartition_no_correlation_branch_respects_min_child_size():
+    # n1, n2 engineered so Cov(n_p, n_q) == 0 everywhere -> the "no resolvable
+    # correlation structure" fallback branch fires (the random-MPS fixture
+    # used elsewhere in this file isn't guaranteed to hit this branch).
+    k = 8
+    n1 = np.full(k, 0.5)
+    n2 = np.outer(n1, n1)
+    cluster = list(range(k))
+
+    V1, V2 = fiedler_bipartition(n1, n2, cluster, min_child_size=3)
+    assert set(V1) | set(V2) == set(cluster)
+    assert set(V1) & set(V2) == set()
+    assert len(V1) >= 3 and len(V2) >= 3
 
 
 # =============================================================================
@@ -276,7 +335,7 @@ class TestRunDecompositionOptimizer:
         return _rdm_data_from_random_mps(self.norb, self.nelec, seed=3)
 
     def test_trajectory_shape_and_validity(self, rdm_data):
-        config = DecompositionOptimizerConfig(num_decos=2, num_subdecos=2, min_cluster_size=1, maxiter=20)
+        config = DecompositionOptimizerConfig(num_decos=2, num_subdecos=2, min_parent_cluster_size=1, maxiter=20)
         trajectory = run_decomposition_optimizer(make_variance_cost_constructor(), rdm_data, config)
 
         # runs all the way down to singleton clusters: norb rounds total
@@ -293,15 +352,45 @@ class TestRunDecompositionOptimizer:
         assert trajectory[-1].num_clusters == 3
         assert len(trajectory) == 3
 
-    def test_min_cluster_size_stops_early(self, rdm_data):
-        config = DecompositionOptimizerConfig(num_decos=2, num_subdecos=2, min_cluster_size=2, maxiter=20)
+    def test_min_parent_cluster_size_stops_early(self, rdm_data):
+        config = DecompositionOptimizerConfig(num_decos=2, num_subdecos=2, min_parent_cluster_size=2, maxiter=20)
         trajectory = run_decomposition_optimizer(make_variance_cost_constructor(), rdm_data, config)
         for deco in trajectory:
             for cluster in deco.partition:
                 assert len(cluster) >= 1  # partitions still fully valid
-        # no cluster larger than min_cluster_size should remain splittable
+        # no cluster larger than min_parent_cluster_size should remain splittable
         last = trajectory[-1]
         assert all(len(c) <= 2 for c in last.partition) or len(last.partition) == 1
+
+    def test_min_child_cluster_size_bounds_all_children(self, rdm_data):
+        # norb=5 split under min_child_size=2 has only one possible outcome:
+        # a single split into sizes {2, 3} (5 >= 2*2, so exactly one split is
+        # possible; neither resulting child, 2 nor 3, is itself >= 2*2=4, so
+        # neither can be split again), independent of the actual RDM values.
+        config = DecompositionOptimizerConfig(num_decos=2, num_subdecos=2, min_child_cluster_size=2, maxiter=20)
+        trajectory = run_decomposition_optimizer(make_variance_cost_constructor(), rdm_data, config)
+
+        for deco in trajectory:
+            for cluster in deco.partition:
+                assert len(cluster) >= 2
+        assert len(trajectory) == 2
+        assert trajectory[-1].num_clusters == 2
+        assert sorted(len(c) for c in trajectory[-1].partition) == [2, 3]
+
+    def test_min_child_cluster_size_unreachable_target_logs_warning(self, rdm_data, caplog):
+        config = DecompositionOptimizerConfig(
+            num_decos=2, num_subdecos=2, min_child_cluster_size=2, target_num_clusters=5, maxiter=20,
+        )
+        with caplog.at_level(logging.WARNING, logger="cluster_number_decomposition_optimization"):
+            trajectory = run_decomposition_optimizer(make_variance_cost_constructor(), rdm_data, config)
+
+        # target_num_clusters=5 is unreachable under min_child_cluster_size=2 for
+        # norb=5 -- the search must stop early (at 2 clusters) without raising.
+        assert trajectory[-1].num_clusters == 2
+        assert any(
+            "min_child_cluster_size" in record.getMessage() and "target_num_clusters" in record.getMessage()
+            for record in caplog.records
+        )
 
     def test_best_decomposition_lookup(self, rdm_data):
         config = DecompositionOptimizerConfig(num_decos=2, num_subdecos=2, maxiter=20)
@@ -355,7 +444,7 @@ def test_commutator_cost_constructor_runs():
 
     cost_fn = make_commutator_cost_constructor()
     children = expand_decomposition(
-        deco, rdm_data, cost_fn, num_subdecos=1, min_cluster_size=1, maxiter=20
+        deco, rdm_data, cost_fn, num_subdecos=1, min_parent_cluster_size=1, maxiter=20
     )
     assert len(children) == 1
     child = children[0]
