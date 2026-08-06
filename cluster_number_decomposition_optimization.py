@@ -886,10 +886,13 @@ def _run_dmrg_and_build_rdm_data(
 # cluster_numbers_metrics.py's compute_sector_analysis + generate_plots: it
 # reuses SingleMaxelectransferResult, BasisResult, MetricsOutput,
 # get_ordered_state_projections_in_sectors, get_ordered_decoupled_states,
-# save_metrics and generate_plots from that module UNCHANGED, and
-# get_K_sectors_values_energies /
-# get_K_states_values_energies / plot_energy_vs_K / plot_dual_bar_chart from
-# src.K_sectors_plots UNCHANGED. The only real difference from
+# save_metrics from that module UNCHANGED, and get_K_sectors_values_energies /
+# get_K_states_values_energies from src.K_sectors_plots UNCHANGED. generate_plots
+# (and, through it, plot_energy_vs_K / plot_dual_bar_chart) is called with the
+# additional from_beam_search=True / min_child_cluster_size / target_num_clusters /
+# initial_basis passthrough kwargs, which only add an extra title line -- no
+# other difference from compute_sector_analysis's own call. The only other
+# real difference from
 # compute_sector_analysis is that there ONE cluster_matrix is shared across
 # several orbital bases U (so `sectors` is computed once); here every
 # trajectory entry has its OWN partition, so `sectors` is rebuilt per entry.
@@ -1121,6 +1124,10 @@ def _run_sector_analysis(
             generate_plots(
                 output, plots_dir, max_elec=max_elec, show=args.show_plots, save=True,
                 skip_K_sectors=args.skip_K_sectors, skip_K_states=args.skip_K_states,
+                from_beam_search=True,
+                min_child_cluster_size=args.min_child_cluster_size,
+                target_num_clusters=args.target_num_clusters,
+                initial_basis=args.initial_basis,
             )
 
 
@@ -1195,7 +1202,9 @@ def _plot_trajectory(
     ax.set_ylabel(f"Cost ({metadata['cost']})")
     ax.set_yscale("log")
     ax.set_title(
-        f"{metadata['molecule']} / {metadata['basis_set']}, norb={metadata['norb']}, cost={metadata['cost']}"
+        f"{metadata['molecule']} / {metadata['basis_set']}, norb={metadata['norb']}, cost={metadata['cost']}\n"
+        f"min. child cl. size = {metadata['min_child_cluster_size']}, "
+        f"target num. clusters = {metadata['target_num_clusters']}, in. basis = {metadata['initial_basis']}"
     )
     fig.tight_layout()
 
