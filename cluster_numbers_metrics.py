@@ -897,7 +897,7 @@ def compute_sector_analysis(
         
         transfer_results = []
 
-        if not config.skip_K_states:
+        if not config.skip_K_sectors:
             # --- preprocessing for A) SECTOR-BASED MODE - ordered sectors by decreasing ref. state projection (independent of max_elec!) ---
             logger.info(f"Ordering sectors by decreasing ref. state projection")
             ordered_state_projections_in_sectors = get_ordered_state_projections_in_sectors(sectors, h_linop, psi)

@@ -6,7 +6,7 @@
 #SBATCH --array=0-8
 #SBATCH --partition cluster
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=8G # small FCI spaces here (<= ~14k det.s) and cost=variance (no 3-/4-rdms), so far below the 32G used for commutator-cost/medium DMRG runs
+#SBATCH --mem=32G
 
 # # # block2-related fixes: start # # #
 # 1. Prevent thread oversubscription / hangs when using 1 CPU core

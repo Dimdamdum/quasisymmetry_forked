@@ -781,8 +781,9 @@ def _run_dmrg_and_build_rdm_data(
 # This section is the per-trajectory-entry analog of
 # cluster_numbers_metrics.py's compute_sector_analysis + generate_plots: it
 # reuses SingleMaxelectransferResult, BasisResult, MetricsOutput,
-# get_ordered_decoupled_states, save_metrics and generate_plots from that
-# module UNCHANGED, and get_K_sectors_values_energies /
+# get_ordered_state_projections_in_sectors, get_ordered_decoupled_states,
+# save_metrics and generate_plots from that module UNCHANGED, and
+# get_K_sectors_values_energies /
 # get_K_states_values_energies / plot_energy_vs_K / plot_dual_bar_chart from
 # src.K_sectors_plots UNCHANGED. The only real difference from
 # compute_sector_analysis is that there ONE cluster_matrix is shared across
@@ -838,7 +839,12 @@ def _compute_sector_analysis_for_trajectory(
     compute_sector_analysis produces, ready for save_metrics/generate_plots."""
     import ffsim
     import pyscf.ao2mo
-    from cluster_numbers_metrics import BasisResult, SingleMaxelectransferResult, get_ordered_decoupled_states
+    from cluster_numbers_metrics import (
+        BasisResult,
+        SingleMaxelectransferResult,
+        get_ordered_decoupled_states,
+        get_ordered_state_projections_in_sectors,
+    )
     from src.K_sectors_plots import get_K_sectors_values_energies, get_K_states_values_energies
 
     mps = solver.get_mps()
@@ -873,6 +879,13 @@ def _compute_sector_analysis_for_trajectory(
 
         logger.info(f"Analyzing decomposition: {data_label} ({len(sectors)} symmetry sectors)")
 
+        # Objects independent of max_elec_transfers, computed once per entry and
+        # reused across the whole max_elec loop below (same pattern as the
+        # current compute_sector_analysis in cluster_numbers_metrics.py).
+        ordered_state_projections_in_sectors = None
+        if not skip_K_sectors:
+            ordered_state_projections_in_sectors = get_ordered_state_projections_in_sectors(sectors, h_linop, psi)
+
         ordered_decoupled_states = None
         if not skip_K_states:
             ordered_decoupled_states = get_ordered_decoupled_states(sectors, h_linop, psi)
@@ -890,7 +903,7 @@ def _compute_sector_analysis_for_trajectory(
             if not skip_K_sectors:
                 (K_sectors_values, K_sectors_energies, K_sectors_retained_dimensions,
                  chem_accuracy_reached_sectors) = get_K_sectors_values_energies(
-                    psi, h_linop, dmrg_energy, sectors, max_elec, "projected",
+                    psi, h_linop, dmrg_energy, sectors, ordered_state_projections_in_sectors, max_elec, "projected",
                     max_K_sectors=max_K_sectors, verbose=0,
                 )
                 transfer_result.K_sectors_values = K_sectors_values
