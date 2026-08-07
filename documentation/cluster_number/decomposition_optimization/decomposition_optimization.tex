@@ -1,0 +1,371 @@
+\documentclass[10pt]{article}
+
+\usepackage[margin=0.8in]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{fancyvrb}
+\usepackage{hyperref}
+
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\Cov}{\mathrm{Cov}}
+\DeclarePairedDelimiter{\abs}{\lvert}{\rvert}
+\DeclarePairedDelimiter{\norm}{\lVert}{\rVert}
+\newcommand{\ket}[1]{\lvert #1 \rangle}
+\newcommand{\bra}[1]{\langle #1 \rvert}
+\newcommand{\expval}[1]{\langle #1 \rangle}
+
+\title{Joint Cluster-Partition and Orbital-Basis Optimization\\
+\large A technical note on \texttt{cluster\_number\_decomposition\_optimization.py}}
+\date{\today}
+\author{}
+
+\begin{document}
+\maketitle
+\vspace{-2em}
+
+\section{Introduction}
+
+Consider a molecular Hamiltonian $H$ in a basis of $\mathrm{norb}$ spatial orbitals and a
+fixed-particle-number state $\ket{\psi}$ (typically a DMRG ground state). A cluster number
+decomposition partitions the orbitals into clusters $C_1,\dots,C_k$, each with total occupation
+operator $N_{C_i}=\sum_{p\in C_i}n_p$; if $\ket{\psi}$ is close to a joint eigenstate of every
+$N_{C_i}$, each acts as an approximate quasisymmetry, enabling the Hilbert-space truncations
+this codebase is built around. A decomposition is a pair: the partition $P$, and the orbital
+basis $U$ in which the clusters are defined, since rotating the orbitals changes which
+operators the $N_{C_i}$ actually are.
+
+The sister module \texttt{cluster\_numbers\_metrics.py} fixes $P$ by hand and only optimizes
+$U$. This module, documented here, searches over both jointly. Exhaustive search over $P$ is
+impossible -- partitioning $\mathrm{norb}$ orbitals has $B_{\mathrm{norb}}$ (Bell number)
+possibilities, already $B_{16}\approx10^{10}$ for a modest active space -- so it uses a
+heuristic \emph{beam search} instead: build finer partitions one split at a time, keep a
+bounded set of promising candidates, and re-optimize $U$ locally after each split.
+
+\section{Objects and Notation}
+
+\paragraph{Decomposition.} A \emph{decomposition} is a pair $(P,U)$: $P$ a partition of
+$\{0,\dots,\mathrm{norb}-1\}$ into clusters, and $U$ the $\mathrm{norb}\times\mathrm{norb}$
+orbital rotation relative to a fixed reference basis (molecular orbitals, MOs, or natural
+orbitals, NatOs). $U$ is parameterized by a flat vector $x\in\mathbb{R}^{\binom{\mathrm{norb}}{2}}$:
+$x$ fills the strict upper triangle of an antisymmetric generator $A$ (in
+\texttt{np.triu\_indices(norb,k=1)} order, row-major over $p<q$), and $U=\exp(A)$. Since $A$ is
+real and antisymmetric, $U$ is always a \emph{proper rotation}, $U\in SO(\mathrm{norb})$:
+$U^\top U=I$ and $\det U=+1$, never merely orthogonal, never a generic complex unitary. This is
+the one rotation convention used throughout this module and in the routines it reuses from
+\texttt{src/cluster\_number\_operators.py}.
+
+\paragraph{RDM data.} All cost functions are built from reduced density matrices (RDMs) of
+$\ket{\psi}$ in the current rotated basis, bundled in an \texttt{RDMData} object:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Field & Content \\
+\midrule
+\texttt{D} & spin-summed 1-RDM (always needed) \\
+\texttt{Gamma} & spin-summed 2-RDM (always needed) \\
+\texttt{rdm3}, \texttt{rdm4} & spin-summed 3-/4-RDM (commutator cost only) \\
+\texttt{h1e}, \texttt{g2e\_full} & one-/two-electron integrals (commutator cost only) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Cost functional.} Every cost function has the same shape: a sum over clusters of a
+per-cluster cost built from that cluster's number-operator statistics,
+$C(P,U)=\sum_{c\in P} c(N_c)$, evaluated at rotation $U$. Section~\ref{sec:costs} lists the five
+supported cost functions.
+
+\section{Cost Functions}
+\label{sec:costs}
+
+\begin{table}[h]
+\centering
+\begin{tabularx}{\textwidth}{lXll}
+\toprule
+Name & Formula & Needs & Cost \\
+\midrule
+variance & $\sum_C \Var(N_C)^p$ & 1-,2-RDM & $O(\mathrm{norb}^5)$ \\
+extremality & $\sum_C \expval{N_C}(2\abs{C}-\expval{N_C})$ & 1-RDM & $O(\mathrm{norb}^2)$ \\
+eval\_eq & $\sum_C\left[\Var(N_C)+(\expval{N_C}-e_C)^2\right]$ & 1-,2-RDM & $O(\mathrm{norb}^5)$ \\
+mixed & $c_1\!\cdot\!\text{variance}+c_2\!\cdot\!\text{extremality}$ & 1-,2-RDM & $O(\mathrm{norb}^5)$ \\
+commutator & $\sum_C \expval{[H,N_C]^2}$ & 1-,2-,3-,4-RDM, $h_{1e}$, $g_{2e}$ & see text \\
+\bottomrule
+\end{tabularx}
+\caption{The five cost functions built into this module. $\expval{\cdot}=\bra{\psi}\cdot\ket{\psi}$
+throughout. $p$ is a tunable exponent (default 1); $e_C$ are target integer eigenvalues.}
+\end{table}
+
+The variance exponent $p$ raises each cluster's variance individually before summing, not the
+total. The extremality cost needs only the 1-RDM: it is a downward parabola in $\expval{N_C}$,
+zero at $\expval{N_C}\in\{0,2\abs{C}\}$ and maximal at half filling; minimizing it pushes every
+cluster's occupation toward an integer extreme.
+
+\paragraph{The commutator cost.} $F(C)=\expval{[H,N_C]^2}$ measures how far $N_C$ is from
+commuting with $H$ on $\ket{\psi}$: $F(C)=0$ means $N_C$ is an exact symmetry generator on this
+state. Since $H$ and $N_C$ are Hermitian, $[H,N_C]$ is anti-Hermitian, so
+$F(C)=-\norm{[H,N_C]\ket{\psi}}^2\le0$ always; the code returns $-F(C)=\norm{[H,N_C]\ket{\psi}}^2\ge0$,
+so that, like the other four costs, smaller is better. Expanding $[H,N_C]$ (a 1-/2-body
+operator) against another 1-body operator keeps it a 1-/2-body operator, so $F(C)$ contracts
+the 1-,2-,3-,4-RDM with $h_{1e}$ and $g_{2e}$; the full formula is in
+\texttt{src/cluster\_number\_operators.py}, not reproduced here.
+Two implementations exist. \texttt{number\_commutator\_cost\_v1} recomputes an
+$O(\mathrm{norb}^8)$-class tensor contraction independently for every cluster.
+\texttt{number\_commutator\_cost\_v2} observes that every term of $F(C)$ is linear in the
+cluster indicator $I_C\in\{0,1\}^\mathrm{norb}$, used exactly twice, so $F(C)=I_C^\top K I_C$ is
+a quadratic form for a single $\mathrm{norb}\times\mathrm{norb}$ kernel $K$ depending only on
+$H,\ket{\psi}$, not on $C$; $K$ is built once per rotation (the same $O(\mathrm{norb}^8)$-class
+cost, but paid only once), and every cluster's score is then a cheap $O(\mathrm{norb}^2)$
+bilinear form. Because it needs the 3-/4-RDM at \emph{every} candidate rotation, it is too
+expensive to drive the search itself -- Sections~\ref{sec:fiedler}--\ref{sec:beam} always use
+the cheap variance cost instead -- and is reserved for the single polish step
+(Section~\ref{sec:polish}) on a chosen trajectory endpoint.
+
+\section{Cluster Splitting: Fiedler Bisection with a Minimum-Size Floor}
+\label{sec:fiedler}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Symbol & Meaning \\
+\midrule
+$C$, $k=\abs{C}$ & the cluster being split, and its size \\
+$n_1,n_2$ & one-/two-body number statistics restricted to $C$ under the current $U$ \\
+$W_{pq}$ & $\abs{\Cov(n_p,n_q)}=\abs{n_2[p,q]-n_1[p]n_1[q]}$, $p\ne q \in C$, $W_{pp}=0$ \\
+$L$ & graph Laplacian of $W$: $L=\mathrm{diag}(W\mathbf{1})-W$ \\
+$v$ & Fiedler vector: eigenvector of $L$ for its second-smallest eigenvalue \\
+$k_{\min}$ & \texttt{min\_child\_cluster\_size}: floor on each resulting child's size \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{algorithm}[h]
+\caption{\textsc{FiedlerBipartition}$(n_1,n_2,C,k_{\min})$}
+\label{alg:fiedler}
+\begin{algorithmic}[1]
+\small
+\If{$k<2$} \textbf{raise} error: nothing to split \EndIf
+\If{$k<2k_{\min}$} \textbf{raise} error: no split of $C$ can respect the floor $k_{\min}$ \EndIf
+\If{$k=2$} \Return $(\{C_1\},\{C_2\})$ \Comment{trivial; matches what the general path below gives}
+\EndIf
+\State compute $W$
+\If{$W\approx 0$} \Comment{no resolvable correlation}
+    \State order $\gets C$ in its own given index order; \quad cut $\gets \lfloor k/2\rfloor$
+\Else
+    \State compute Laplacian $L$ and Fiedler vector $v$
+    \If{$\mathrm{sign}(v)$ is the same for every entry} \Comment{degenerate split}
+        \State order $\gets C$ sorted by $v$, ascending; \quad cut $\gets \lfloor k/2\rfloor$
+    \Else
+        \State order $\gets C$ sorted by $v$, ascending; \quad cut $\gets \#\{p: v_p\le 0\}$
+    \EndIf
+\EndIf
+\State cut $\gets \min\!\big(\max(\text{cut},\,k_{\min}),\; k-k_{\min}\big)$ \Comment{clamp; no-op at $k_{\min}=1$}
+\State \Return $\big(\text{order}[\text{cut}:],\ \text{order}[:\text{cut}]\big)$
+\end{algorithmic}
+\end{algorithm}
+
+Orbitals whose occupations fluctuate together end up on the same side: $W_{pq}$ is large exactly
+when $n_p$ and $n_q$ are strongly correlated, so cutting along the Fiedler vector separates $C$
+into two weakly-correlated groups -- a cheap proxy for the split that will end up costing the
+least under the subsequent continuous optimization.
+
+The two fallback branches use different orderings even though both cut at $\lfloor k/2\rfloor$:
+the no-correlation branch keeps $C$'s own given order, since there is no correlation structure
+to sort by; the degenerate-Fiedler branch sorts by the Fiedler vector itself, since there is
+structure, just not one with a clean sign split. Keeping these separate matters for
+reproducibility of a given run, not for correctness: neither ordering is more ``right'' than the
+other in the degenerate case.
+
+The clamp step is the feature this section documents, and is provably a no-op at the default
+$k_{\min}=1$: every branch above already produces two non-empty groups, so the natural cut is
+always already in $[1,k-1]$, a subset of the clamp range at $k_{\min}=1$. For $k_{\min}>1$ the
+clamp pulls the boundary in from whichever side is too small, moving exactly the
+Fiedler-boundary-nearest orbitals across -- not an arbitrary reshuffling. The $k=2$ early return
+is not a fourth case: it only skips a trivial $2\times2$ eigendecomposition that would return the
+same split. The Laplacian eigendecomposition costs $O(k^3)$ for a cluster of size $k$, negligible
+next to the $O(\mathrm{norb}^5)$-or-worse cost evaluations elsewhere: Fiedler splitting is never
+the bottleneck.
+
+\section{Beam Search}
+\label{sec:beam}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Symbol & Meaning \\
+\midrule
+$(P,U)$ & a decomposition: partition plus accumulated rotation \\
+$B$ & the beam: a list of up to \texttt{num\_decos} decompositions \\
+$b$, $s$ & \texttt{num\_decos} (beam width), \texttt{num\_subdecos} (children/parent/round) \\
+$k_p$, $k_c$ & \texttt{min\_parent\_cluster\_size}, \texttt{min\_child\_cluster\_size} \\
+$T$ & \texttt{target\_num\_clusters} (optional early-stop target) \\
+$\mathrm{traj}$ & the trajectory: best decomposition found for each cluster count \\
+\textsc{CanSplit}$(k)$ & $(k>k_p)\wedge(k\ge 2k_c)$: is a cluster of size $k$ worth trying to split \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{algorithm}[h]
+\caption{\textsc{RunDecompositionOptimizer}}
+\label{alg:beam}
+\begin{algorithmic}[1]
+\small
+\State $B \gets$ $b$ copies of the trivial 1-cluster decomposition, seeded from reference bases
+    (MOs and/or NatOs, cycled, optionally each Fiedler-reordered)
+\State $\mathrm{traj} \gets [\arg\min_{\text{cost}} B]$
+\While{true}
+  \If{$T$ set and every $(P,U)\in B$ has $\abs{P}\ge T$} \textbf{break} \EndIf
+  \If{no cluster in any $(P,U)\in B$ satisfies \textsc{CanSplit}} \textbf{break} \EndIf
+  \If{round-count cap reached} \textbf{break} \EndIf
+  \State candidates $\gets \emptyset$
+  \For{each $(P,U) \in B$}
+    \State rank $P$'s clusters satisfying \textsc{CanSplit} by current $\Var(N_C)$, descending
+    \For{each of the top $s$ such clusters $C$}
+      \State $(V_1,V_2) \gets \textsc{FiedlerBipartition}(n_1,n_2,C,k_c)$ \Comment{Algorithm~\ref{alg:fiedler}}
+      \State $P' \gets (P\setminus\{C\})\cup\{V_1,V_2\}$ \Comment{only $C$ changes}
+      \State re-optimize $U$, restricted to $C$'s internal generator entries, warm-started at $0$
+      \State candidates $\gets$ candidates $\cup \{(P',U')\}$
+    \EndFor
+  \EndFor
+  \If{candidates $=\emptyset$} \textbf{break} \Comment{provably unreachable if line 5 did not fire}\EndIf
+  \State $B \gets$ best $b$ of candidates, pooled globally across all parents, by cost
+  \State $\mathrm{traj} \gets \mathrm{traj} + [\arg\min_{\text{cost}} B]$
+\EndWhile
+\State \Return $\mathrm{traj}$
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Discrete versus continuous.} \emph{Which} cluster to split is decided by a cheap,
+cost-function-independent rule: among clusters satisfying \textsc{CanSplit}, pick those with the
+largest current $\Var(N_C)$. Only the continuous re-optimization of $U$ after a split, and the
+ranking used to prune the beam, depend on the user-supplied cost function. This is why the cheap
+variance cost should drive the search itself: the discrete decisions never depend on which cost
+function is passed in, but every candidate's continuous optimization does, so an expensive cost
+multiplies its cost by the number of candidates touched.
+
+\paragraph{Block-restricted optimization.} When cluster $C$ is split, only the entries of the
+antisymmetric generator $A$ mixing pairs of orbitals \emph{within} $C$ are freed for the
+subsequent L-BFGS re-optimization; every other entry of $A$ stays zero. This is \emph{not} a
+cheaper gradient evaluation: the implementation always builds the full
+$\binom{\mathrm{norb}}{2}$-length, zero-padded parameter vector and calls $\exp(\cdot)$ on a
+dense $\mathrm{norb}\times\mathrm{norb}$ matrix regardless of how many entries are free, and
+reverse-mode automatic differentiation costs about the same multiple of the forward pass
+independent of how many inputs are free. The real gains are a lower-dimensional optimization
+landscape (fewer local optima, fewer outer iterations in practice), and, more importantly, an
+exact structural guarantee. Because $A$ is zero outside $C$'s block, $\exp(A)$ is
+block-diagonal: identity on every orbital outside $C$. Splitting $C$ therefore leaves every
+other cluster's orbitals, and their number-operator statistics, exactly unchanged -- the
+\emph{block-locality invariant} that makes it meaningful to compare candidate splits of
+different clusters against a common, otherwise-frozen partition. Since $A$ is always real and
+antisymmetric, $U=\exp(A)\in SO(\mathrm{norb})$ always, and $SO(\mathrm{norb})$ is closed under
+composition, so every accumulated rotation stays a proper rotation throughout the search.
+
+\paragraph{The search loop.} Each child differs from its parent in exactly one cluster: the one
+chosen for splitting. Every round, every beam member proposes up to $s$ children; all children
+from all beam members, from every parent, are pooled into one global candidate list, and the
+best $b$ by cost become the new beam -- not the best $s$ per parent kept separately. This global
+pooling means a single strong parent can, in principle, supply all $b$ survivors, at the cost of
+losing lineage diversity, but it also guarantees the beam's best cost is non-increasing round
+over round. Because every surviving beam member gains exactly one cluster per round, starting
+from a uniform 1-cluster beam, every beam member has the same cluster count after any given
+number of rounds; by induction, the trajectory has no gaps and no duplicates:
+$\mathrm{traj}[i]$ has exactly $i+1$ clusters. The restricted re-optimization is warm-started at
+the all-zero parameter vector -- the raw Fiedler cut, with no further rotation -- which is a
+valid point of the restricted search space, so the optimized cost is guaranteed no worse than the
+cost at that starting point.
+
+\paragraph{Stopping and the trajectory.} The loop stops when (1) a requested target cluster
+count is reached; (2) no cluster anywhere in the beam satisfies \textsc{CanSplit}; (3) a
+round-count safety cap is hit; or (4), defensively, no children were produced in a round.
+Condition (4) is provably redundant with (2): a beam member contributes at least one child
+whenever it has a splittable cluster, so if (2) had not already fired, (4) cannot fire either --
+it is kept only for defensive symmetry against future changes to the eligibility rule. The
+result is a \emph{trajectory}: the best decomposition found for each cluster count reached, not
+a single winner. This is necessary because raw cost, on its own, trivially favors finer
+partitions. The clearest instance is an exact operator identity, not an empirical observation:
+for the un-split, single all-orbitals cluster, $\Var(N_\mathrm{total})=0$ for \emph{every}
+rotation $U$, because total particle number is invariant under any single-particle basis change
+and the state has fixed particle number -- no optimization is needed to see this. Picking a
+useful point on the trajectory therefore requires an external metric;
+Section~\ref{sec:sectors}'s convergence analysis is that metric in practice, and
+\texttt{best\_decomposition(traj, num\_clusters=$k$)} retrieves the trajectory entry with
+exactly $k$ clusters once a preferred $k$ is known. Every candidate partition, at every round,
+is validated -- covers every orbital exactly once, no empty clusters -- before it is accepted
+into the beam.
+
+\section{Polishing}
+\label{sec:polish}
+
+After the beam search terminates, each trajectory entry can optionally undergo one further, full
+joint reoptimization: all $\binom{\mathrm{norb}}{2}$ generator entries are freed at once (not
+block-restricted), starting from the beam search's own $U$, for that entry's now-fixed
+partition. This polishes away suboptimality the greedy, block-restricted process could not reach
+on its own. Polishing runs once per trajectory entry, entirely independently of the others: it
+does not feed back into how the trajectory was built. As with each split, it is warm-started at
+the beam search's own rotation, so the polished cost is guaranteed no worse than the unpolished
+one -- and it is the natural place to switch to a more expensive, more physically faithful cost
+such as the commutator cost, since it now runs only once per entry rather than once per
+beam-search candidate.
+
+\section{Downstream Sector Analysis}
+\label{sec:sectors}
+
+Selected trajectory entries -- by default, every entry with at least two clusters, since a
+single all-orbitals cluster carries no symmetry information -- are passed through the same
+K-sectors/K-states Hilbert-space-truncation convergence analysis used by
+\texttt{cluster\_numbers\_metrics.py}'s fixed-partition workflow, reused essentially unchanged:
+for each entry and each requested maximum electron-transfer count, it ranks symmetry sectors
+(respectively, decoupled eigenstates) by proximity to the reference state, and reports how the
+projected energy and retained dimension converge as more are kept, together with whether
+chemical accuracy is reached. The only structural difference is bookkeeping: there, one
+\texttt{cluster\_matrix} is shared across several bases, so sectors are computed once; here,
+every entry carries its own partition, so sectors are rebuilt per entry. This is the practical
+answer to Section~\ref{sec:beam}'s open question of which trajectory entry to prefer: the one
+reaching chemical accuracy with fewest retained sectors or states, not the one with lowest raw
+cost.
+
+\section{Usage}
+
+\begin{Verbatim}[fontsize=\footnotesize]
+python cluster_number_decomposition_optimization.py h2o sto-3g 2.0 variance \
+    --bond-angle 104.5 --initial-basis both --target-num-clusters 3
+\end{Verbatim}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{p{4.3cm}X}
+\toprule
+Flag & Meaning \\
+\midrule
+\texttt{--num-decos}, \texttt{--num-subdecos} & beam width $b$, children per parent per round $s$ (default 4, 4) \\
+\texttt{--min-parent-cluster-size} & $k_p$: clusters at or below this size are never chosen for splitting (default 1) \\
+\texttt{--min-child-cluster-size} & $k_c$: neither child of a split may end up smaller than this (default 1) \\
+\texttt{--target-num-clusters} & stop once this many clusters is reached (default: run to singletons) \\
+\texttt{--initial-basis \{MOs,NatOs,both\}} & reference basis (or bases) seeding the beam (default MOs) \\
+\texttt{--fiedler-reorder} & reorder each initial basis by its own global Fiedler vector \\
+\texttt{--no-polish}, \texttt{--polish-maxiter} & skip, or tune the iteration budget of, Section~\ref{sec:polish}'s polish step \\
+\texttt{--analyze-num-clusters}, \texttt{--skip-sector-analysis}, \texttt{--skip-K-sectors}, \texttt{--skip-K-states} & which trajectory entries get Section~\ref{sec:sectors}'s analysis, and which half of it \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+DMRG, HPC, logging and output-path flags (\texttt{--bond-dim}, \texttt{--n-sweeps},
+\texttt{--n-threads}, \texttt{--output-dir}, \dots) are shared verbatim with
+\texttt{cluster\_numbers\_metrics.py}; see \texttt{--help} for the full list.
+
+As a library, the search can be driven directly on RDMs computed elsewhere:
+
+\begin{Verbatim}[fontsize=\footnotesize]
+from cluster_number_decomposition_optimization import (
+    RDMData, DecompositionOptimizerConfig, run_decomposition_optimizer,
+    make_variance_cost_constructor, polish_decomposition, best_decomposition,
+)
+rdm_data = RDMData(D=D, Gamma=Gamma)
+config = DecompositionOptimizerConfig(num_decos=4, num_subdecos=6, min_parent_cluster_size=2)
+traj = run_decomposition_optimizer(make_variance_cost_constructor(), rdm_data, config)
+deco = best_decomposition(traj, num_clusters=3)
+deco = polish_decomposition(deco, rdm_data, make_variance_cost_constructor())
+\end{Verbatim}
+
+\end{document}
