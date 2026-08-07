@@ -2,12 +2,12 @@
 #SBATCH --job-name=decomp_opt
 #SBATCH --output=logs/cluster_decomp_opt_%A_%a.out
 #SBATCH --error=logs/cluster_decomp_opt_%A_%a.err
-#SBATCH --time=10:00:00
-#SBATCH --array=0-2
+#SBATCH --time=20:00:00
+#SBATCH --array=0-4
 #SBATCH --partition cluster
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
-#SBATCH --exclude=th-cl-uv203
+#SBATCH --exclude=th-cl-uv[201-203,301-302],met-cl-lx[017-020,022-025]
 
 # # # block2-related fixes: start # # #
 # 1. Prevent thread oversubscription / hangs when using 1 CPU core
@@ -46,14 +46,14 @@ source quasisym/bin/activate
 # (dim 3,025) stay three orders of magnitude below that and are safe even in
 # the worst case of one dominant sector.
 
-molecules=(   h2o     h2o     h2o    )
-bases=(       sto-3g  sto-3g  sto-3g )
-bondlengths=( 0.96    1.50    2.00   )
-angles=(      104.5   104.5   104.5  )
+molecules=(   n2      n2      lih     lih     lih     )
+bases=(       sto-3g  sto-3g  6-31g   6-31g   6-31g   )
+bondlengths=( 1.80    2.50    1.60    2.50    4.00    )
+angles=(      ""      ""      ""      ""      ""      )
 
-# molecules=(   h4_square     h4_square     h4_square    )
-# bases=(       6-311++g   6-311++g   6-311++g  )
-# bondlengths=( 0.50    1.50    2.00   )
+# molecules=(   h2o    h2o     h2o    )
+# bases=(       6-31g   6-31g   6-31g  )
+# bondlengths=( 0.96    1.50    2.00   )
 # angles=(      ""   ""   ""  )
 
 molecule="${molecules[$SLURM_ARRAY_TASK_ID]}"
@@ -71,6 +71,7 @@ fi
 # meant to drive the search (see the module docstring); commutator additionally
 # needs the 3-/4-RDM at every beam-search node and is meant for polishing a
 # chosen winner afterward, not for a broad first look.
-python cluster_number_decomposition_optimization.py "$molecule" "$basis" "$bondlength" variance \
+python cluster_number_decomposition_optimization.py "$molecule" "$basis" "$bondlength" commutator \
     "${OPT_ARGS[@]}" \
-    --initial-basis both --skip-K-states --min-child-cluster-size 2 --output-dir outputs_TEMP_min_child_cluster_size_2 --plots-dir plots_TEMP_min_child_cluster_size_2
+    --initial-basis both --skip-K-states --min-child-cluster-size 4
+
