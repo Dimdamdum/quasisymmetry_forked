@@ -144,7 +144,9 @@ if __name__ == "__main__":
     cumulative_weights = np.cumsum(weights[order])
     K = np.nan
     for i, cumweight in enumerate(cumulative_weights):
-        if cumweight > 1 - approx_eckart_epsilon:
+        # the 2 comes from renormalizing the truncating state and
+        # sqrt(1 - x) approx 1 - 1/2 x
+        if cumweight > 1 - 2 * approx_eckart_epsilon:
             print("Sector count", i)
             K = i + 1
             break
