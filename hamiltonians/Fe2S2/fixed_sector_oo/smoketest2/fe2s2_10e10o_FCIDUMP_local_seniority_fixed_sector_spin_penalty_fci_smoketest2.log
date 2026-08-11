@@ -1,0 +1,4 @@
+[workflow] reference=fci  (wavefunction / energy used as truth)
+[workflow] cost_engine=statevector  (from --reference)
+[workflow] cost_function=fixed_sector
+[workflow] orbital_rotation=full

@@ -1,0 +1,21 @@
+=== fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd: attempt 1 (maxiter=3, x0=zeros) ===
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] [workflow] reference=dmrg  (wavefunction / energy used as truth)
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] [workflow] cost_engine=dmrg  (from --reference)
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] [workflow] cost_function=NC
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] [workflow] bond_dim=63
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] [workflow] orbital_rotation=full
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] orbital_rotation=full: N_free=45, N_sym=45
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] DMRG reference energy: -116.516285
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] wavefunction store: /root/dmrg_wavefunctions/fe2s2_10e10o_FCIDUMP_bd63
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] before optimization: 0.172410
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] Sat, 01 Aug 2026 20:35:33 0.172410
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] Sun, 02 Aug 2026 00:45:12 0.172410
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] optimized: 0.172410
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] results written to hamiltonians/Fe2S2/seniority_oo/dmrg_bdscan_63/fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd_attempt1_result.json
+[fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd] cost_before=1.724103e-01  cost_after=1.724104e-01  nit=2  converged=True  message='CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH'
+
+=== summary ===
+fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd: converged=True attempts=1 cost_before=1.724103e-01 cost_after=1.724104e-01 total_nit=2 fcidump=hamiltonians/Fe2S2/seniority_oo/dmrg_bdscan_63/fe2s2_10e10o_FCIDUMP_local_seniority_NC_dmrg_bd63_fd_attempt1_rotated_FCIDUMP
+
+full summary written to hamiltonians/Fe2S2/seniority_oo/dmrg_bdscan_63/summary.json
