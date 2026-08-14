@@ -466,6 +466,7 @@ def metric_1(
     max_eigs_per_sector=20,
     max_sectors_considered=None,
     n_workers=None,
+    max_eigs_total=1000
 ):
     # ================================================================
     # 1. Rank sectors by FCI weight
@@ -561,7 +562,7 @@ def metric_1(
     # exactly once.
     #
 
-    sigma_vectors = [None] * len(states)
+    sigma_vectors = [None] * min(len(states), max_eigs_total)
 
     with MPIPoolExecutor(
         max_workers=n_workers,
@@ -576,7 +577,7 @@ def metric_1(
     ) as executor:
 
         for j, sigma in enumerate(
-            executor.map(process_hamiltonian_state, states)
+            executor.map(process_hamiltonian_state, states[:min(len(states), max_eigs_total)])
         ):
             sigma_vectors[j] = sigma
 
@@ -606,7 +607,7 @@ def metric_1(
         sig,
         v_sector,
     ) in enumerate(
-        states,
+        states[:min(len(states), max_eigs_total)],
         start=1,
     ):
         mask = (sector_id == sig)
@@ -666,7 +667,7 @@ def compute_all_metrics(h1e, eri, norb, nelec, symmetries,
                          rotation_generator=None, civec=None,
                          chem_acc=CHEMICAL_ACCURACY,
                          max_eigs_per_sector=20, max_sectors_considered=None,
-                         ecore=0.0):
+                         ecore=0.0, max_eigs_total=1000):
     # e_exact (and every Rayleigh quotient computed downstream) is the
     # *electronic* energy only -- contract_2e/absorb_h1e never see ecore.
     # Comparisons against chem_acc are differences, so the missing constant
@@ -690,7 +691,7 @@ def compute_all_metrics(h1e, eri, norb, nelec, symmetries,
 
     t = time.time()
     m1 = metric_1(civec, sector_id, h1e, eri, norb, nelec, e_exact, chem_acc,
-                  max_eigs_per_sector, max_sectors_considered)
+                  max_eigs_per_sector, max_sectors_considered, max_eigs_total=max_eigs_total)
     print("Metric1:", time.time() - t)
 
     return {
@@ -717,6 +718,7 @@ if __name__ == "__main__":
     parser.add_argument("--chem-acc", type=float, default=CHEMICAL_ACCURACY)
     parser.add_argument("--max-eigs-per-sector", type=int, default=20)
     parser.add_argument("--max-sectors-considered", type=int, default=None)
+    parser.add_argument("--max-eigs-total", type=int, default=1000)
     args = parser.parse_args()
 
     if args.fcidump:
@@ -739,7 +741,10 @@ if __name__ == "__main__":
         max_eigs_per_sector=args.max_eigs_per_sector,
         max_sectors_considered=args.max_sectors_considered,
         ecore=ecore,
+        max_eigs_total=args.max_eigs_total
     )
     for k in ["E_exact", "n_eigenstates", "n_sectors", "dim_max_sector", "dim_sum_sectors"]:
         print(f"{k}: {result[k]}")
+    if result["n_eigenstates"] is None:
+        print("Couldn't reach chemical accuracy, try increasing --max-eigs-per-sector or --max-eigs-total") 
     print("Finished at " + time.strftime("%a, %d %b %Y %H:%M:%S", time.localtime()))
