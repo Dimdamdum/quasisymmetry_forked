@@ -1,6 +1,6 @@
 \documentclass[10pt]{article}
 
-\usepackage[margin=0.8in]{geometry}
+\usepackage[margin=0.75in]{geometry}
 \usepackage{amsmath,amssymb,mathtools}
 \usepackage{booktabs}
 \usepackage{tabularx}
@@ -226,6 +226,7 @@ $\mathrm{traj}$ & the trajectory: best decomposition found for each cluster coun
       \State $(V_1,V_2) \gets \textsc{FiedlerBipartition}(n_1,n_2,C,k_c)$ \Comment{Algorithm~\ref{alg:fiedler}}
       \State $P' \gets (P\setminus\{C\})\cup\{V_1,V_2\}$ \Comment{only $C$ changes}
       \State re-optimize $U$, restricted to $C$'s internal generator entries, warm-started at $0$
+      \If{\texttt{naturalize\_children}} diagonalize each child's own 1-RDM block \Comment{cost-neutral} \EndIf
       \State candidates $\gets$ candidates $\cup \{(P',U')\}$
     \EndFor
   \EndFor
@@ -261,6 +262,12 @@ other cluster's orbitals, and their number-operator statistics, exactly unchange
 different clusters against a common, otherwise-frozen partition. Since $A$ is always real and
 antisymmetric, $U=\exp(A)\in SO(\mathrm{norb})$ always, and $SO(\mathrm{norb})$ is closed under
 composition, so every accumulated rotation stays a proper rotation throughout the search.
+
+\paragraph{Local naturalization.} By default, each new child's own 1-RDM block is diagonalized in
+place after the block-restricted step -- its orbitals become its own natural orbitals. Exactly
+cost-neutral: $N_{V_1}$, $N_{V_2}$ are basis-independent within their own subspace, so no cost
+here depends on which orthonormal combination represents a cluster -- disable it via
+Section~\ref{sec:usage}'s flag table.
 
 \paragraph{The search loop.} Each child differs from its parent in exactly one cluster: the one
 chosen for splitting. Every round, every beam member proposes up to $s$ children; all children
@@ -327,6 +334,7 @@ reaching chemical accuracy with fewest retained sectors or states, not the one w
 cost.
 
 \section{Usage}
+\label{sec:usage}
 
 \begin{Verbatim}[fontsize=\footnotesize]
 python cluster_number_decomposition_optimization.py h2o sto-3g 2.0 variance \
@@ -341,6 +349,7 @@ Flag & Meaning \\
 \texttt{--num-decos}, \texttt{--num-subdecos} & beam width $b$, children per parent per round $s$ (default 4, 4) \\
 \texttt{--min-parent-cluster-size} & $k_p$: clusters at or below this size are never chosen for splitting (default 1) \\
 \texttt{--min-child-cluster-size} & $k_c$: neither child of a split may end up smaller than this (default 1) \\
+\texttt{--no-naturalize-children} & skip the default local naturalization (cost-neutral either way) \\
 \texttt{--target-num-clusters} & stop once this many clusters is reached (default: run to singletons) \\
 \texttt{--initial-basis \{MOs,NatOs,both\}} & reference basis (or bases) seeding the beam (default MOs) \\
 \texttt{--fiedler-reorder} & reorder each initial basis by its own global Fiedler vector \\

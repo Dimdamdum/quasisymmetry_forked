@@ -46,6 +46,7 @@ from cluster_number_decomposition_optimization import (
     best_decomposition,
     _can_split,
     _split_one_cluster,
+    _local_natural_orbital_rotation,
 )
 from src.cluster_number_operators import number_variance_cost
 
@@ -319,6 +320,222 @@ class TestBlockLocality:
 
         child = _split_one_cluster(deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=200)
         assert child.cost <= cost_at_identity + 1e-8
+
+    def test_naturalize_children_diagonalizes_child_blocks(self, rdm_data):
+        partition = [[0, 1, 2], [3, 4, 5]]
+        U0 = np.eye(self.norb)
+        rdm_data_cur = rotate_rdm_data(rdm_data, U0)
+        n1, n2 = cluster_number_stats(rdm_data_cur, partition)
+        deco = Decomposition(partition=partition, U=U0, cost=0.0)
+        cost_fn = make_variance_cost_constructor()
+
+        child = _split_one_cluster(
+            deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+            naturalize_children=True,
+        )
+        new_clusters = child.partition[1:]  # [3, 4, 5] stays first; V1, V2 are appended
+
+        rdm_data_child = rotate_rdm_data(rdm_data, child.U)
+        for cluster in new_clusters:
+            idx = np.asarray(cluster)
+            block = rdm_data_child.D[np.ix_(idx, idx)]
+            offdiag = block - np.diag(np.diag(block))
+            assert np.max(np.abs(offdiag)) < 1e-8
+
+    def test_naturalize_children_does_not_change_stored_cost(self, rdm_data):
+        partition = [[0, 1, 2], [3, 4, 5]]
+        U0 = np.eye(self.norb)
+        rdm_data_cur = rotate_rdm_data(rdm_data, U0)
+        n1, n2 = cluster_number_stats(rdm_data_cur, partition)
+        deco = Decomposition(partition=partition, U=U0, cost=0.0)
+        cost_fn = make_variance_cost_constructor()
+
+        child_true = _split_one_cluster(
+            deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+            naturalize_children=True,
+        )
+        child_false = _split_one_cluster(
+            deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+            naturalize_children=False,
+        )
+        # Same pre-branch cost_opt either way -- naturalization never touches it.
+        assert child_true.cost == child_false.cost
+        assert child_true.partition == child_false.partition
+
+    def test_naturalize_children_cost_invariant_under_reevaluation(self, rdm_data):
+        # Independently re-evaluates the cost at the pre- and post-naturalization
+        # rotations from scratch (rather than trusting the stored .cost field),
+        # to actually exercise the mathematical invariance claim.
+        partition = [[0, 1, 2], [3, 4, 5]]
+        U0 = np.eye(self.norb)
+        rdm_data_cur = rotate_rdm_data(rdm_data, U0)
+        n1, n2 = cluster_number_stats(rdm_data_cur, partition)
+        deco = Decomposition(partition=partition, U=U0, cost=0.0)
+        cost_fn = make_variance_cost_constructor()
+
+        child_before = _split_one_cluster(
+            deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+            naturalize_children=False,
+        )
+        child_after = _split_one_cluster(
+            deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+            naturalize_children=True,
+        )
+
+        cluster_matrix = partition_to_cluster_matrix(child_before.partition, self.norb)
+        n_params = self.norb * (self.norb - 1) // 2
+
+        rdm_before = rotate_rdm_data(rdm_data, child_before.U)
+        cost_before = float(cost_fn(rdm_before, cluster_matrix)(np.zeros(n_params)))
+
+        rdm_after = rotate_rdm_data(rdm_data, child_after.U)
+        cost_after = float(cost_fn(rdm_after, cluster_matrix)(np.zeros(n_params)))
+
+        assert cost_after == pytest.approx(cost_before, abs=1e-8)
+
+    def test_naturalize_children_preserves_block_locality(self, rdm_data):
+        partition = [[0, 1, 2], [3, 4, 5]]
+        U0 = np.eye(self.norb)
+        rdm_data_cur = rotate_rdm_data(rdm_data, U0)
+        n1, n2 = cluster_number_stats(rdm_data_cur, partition)
+        deco = Decomposition(partition=partition, U=U0, cost=0.0)
+        cost_fn = make_variance_cost_constructor()
+
+        child = _split_one_cluster(
+            deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+            naturalize_children=True,
+        )
+        assert [3, 4, 5] in child.partition
+        untouched = [3, 4, 5]
+
+        rdm_data_child = rotate_rdm_data(rdm_data, child.U)
+        n1_child, n2_child = cluster_number_stats(rdm_data_child, [untouched])
+        var_child = cluster_variance(n1_child, n2_child, untouched)
+        var_parent = cluster_variance(n1, n2, untouched)
+
+        assert var_child == pytest.approx(var_parent, abs=1e-8)
+        assert np.allclose(n1_child[untouched], n1[untouched], atol=1e-8)
+
+    def test_naturalize_children_keeps_U_orthogonal(self, rdm_data):
+        partition = [[0, 1, 2], [3, 4, 5]]
+        U0 = np.eye(self.norb)
+        rdm_data_cur = rotate_rdm_data(rdm_data, U0)
+        n1, n2 = cluster_number_stats(rdm_data_cur, partition)
+        deco = Decomposition(partition=partition, U=U0, cost=0.0)
+        cost_fn = make_variance_cost_constructor()
+
+        child = _split_one_cluster(
+            deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+            naturalize_children=True,
+        )
+        assert np.allclose(child.U @ child.U.T, np.eye(self.norb), atol=1e-8)
+
+    def test_naturalize_children_default_is_true(self, rdm_data):
+        partition = [[0, 1, 2], [3, 4, 5]]
+        U0 = np.eye(self.norb)
+        rdm_data_cur = rotate_rdm_data(rdm_data, U0)
+        n1, n2 = cluster_number_stats(rdm_data_cur, partition)
+        deco = Decomposition(partition=partition, U=U0, cost=0.0)
+        cost_fn = make_variance_cost_constructor()
+
+        # No naturalize_children kwarg passed -- must default to True.
+        child = _split_one_cluster(deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50)
+        new_clusters = child.partition[1:]
+
+        rdm_data_child = rotate_rdm_data(rdm_data, child.U)
+        for cluster in new_clusters:
+            idx = np.asarray(cluster)
+            block = rdm_data_child.D[np.ix_(idx, idx)]
+            offdiag = block - np.diag(np.diag(block))
+            assert np.max(np.abs(offdiag)) < 1e-8
+
+
+# =============================================================================
+# Naturalize-children: local natural orbitals after each split
+# =============================================================================
+
+
+def test_local_natural_orbital_rotation_diagonalizes_blocks():
+    norb = 6
+    rng = np.random.default_rng(11)
+    A = rng.standard_normal((norb, norb))
+    D_cur = (A + A.T) / 2  # hand-built symmetric "1-RDM" with guaranteed off-diagonal structure
+    U_step = np.eye(norb)  # no additional rotation -- D_cur is already in U_step's target basis
+    clusters = [[0, 2, 4], [1, 3]]
+    untouched = [5]
+
+    R = _local_natural_orbital_rotation(U_step, D_cur, clusters, norb)
+
+    assert np.allclose(R @ R.T, np.eye(norb), atol=1e-10)
+    assert np.allclose(R[np.ix_(untouched, untouched)], np.eye(len(untouched)))
+    all_cluster_orbitals = [p for c in clusters for p in c]
+    assert np.allclose(R[np.ix_(untouched, all_cluster_orbitals)], 0.0)
+    assert np.allclose(R[np.ix_(all_cluster_orbitals, untouched)], 0.0)
+
+    D_final = R.conj() @ D_cur @ R.T
+    for cluster in clusters:
+        idx = np.asarray(cluster)
+        block = D_final[np.ix_(idx, idx)]
+        offdiag = block - np.diag(np.diag(block))
+        assert np.max(np.abs(offdiag)) < 1e-8
+
+
+def test_naturalize_children_with_commutator_cost():
+    # The commutator cost is the least obvious invariance case (it involves H,
+    # not just RDM traces) -- TestBlockLocality only ever exercises the variance
+    # cost, so this gets its own dedicated coverage.
+    norb, nelec = 4, (2, 1)
+    rdm_data = _rdm_data_from_random_mps(norb, nelec, with_34=True, seed=6)
+    partition = [[0, 1, 2, 3]]
+    U0 = np.eye(norb)
+    rdm_data_cur = rotate_rdm_data(rdm_data, U0)
+    n1, n2 = cluster_number_stats(rdm_data_cur, partition)
+    deco = Decomposition(partition=partition, U=U0, cost=0.0)
+    cost_fn = make_commutator_cost_constructor()
+
+    child_true = _split_one_cluster(
+        deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=20,
+        naturalize_children=True,
+    )
+    child_false = _split_one_cluster(
+        deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=20,
+        naturalize_children=False,
+    )
+    assert child_true.cost == child_false.cost
+    assert np.allclose(child_true.U @ child_true.U.T, np.eye(norb), atol=1e-6)
+
+    cluster_matrix = partition_to_cluster_matrix(child_true.partition, norb)
+    n_params = norb * (norb - 1) // 2
+    rdm_naturalized = rotate_rdm_data(rdm_data, child_true.U)
+    cost_reeval = float(cost_fn(rdm_naturalized, cluster_matrix)(np.zeros(n_params)))
+    assert cost_reeval == pytest.approx(child_true.cost, abs=1e-6)
+
+
+def test_naturalize_children_with_singleton_children():
+    # min_child_cluster_size defaults to 1, and every size-2 parent splits into
+    # two singletons -- a common case, not an exotic edge case, forcing two 1x1
+    # D blocks through the naturalization step.
+    norb, nelec = 5, (3, 2)
+    rdm_data = _rdm_data_from_random_mps(norb, nelec, seed=7)
+    partition = [[0, 1], [2, 3, 4]]
+    U0 = np.eye(norb)
+    rdm_data_cur = rotate_rdm_data(rdm_data, U0)
+    n1, n2 = cluster_number_stats(rdm_data_cur, partition)
+    deco = Decomposition(partition=partition, U=U0, cost=0.0)
+    cost_fn = make_variance_cost_constructor()
+
+    child = _split_one_cluster(
+        deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+        naturalize_children=True,
+    )
+    assert sorted(len(c) for c in child.partition) == [1, 1, 3]
+    assert np.allclose(child.U @ child.U.T, np.eye(norb), atol=1e-8)
+
+    child_off = _split_one_cluster(
+        deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+        naturalize_children=False,
+    )
+    assert child.cost == child_off.cost
 
 
 # =============================================================================

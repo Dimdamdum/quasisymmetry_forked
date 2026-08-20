@@ -26,7 +26,9 @@ Algorithm (see Decomposition, run_decomposition_optimizer):
      it into two by spectral (Fiedler) bisection of its pairwise
      number-operator covariance graph, then re-optimize the orbital rotation
      *restricted to that cluster's subspace* (all other clusters, and their
-     orbitals, are left untouched) against `cost_function_constructor`.
+     orbitals, are left untouched) against `cost_function_constructor`, then
+     (by default) diagonalize each child's own 1-RDM block to that child's own
+     natural orbitals -- exactly cost-neutral (see `--no-naturalize-children`).
   3. Keep the best `num_decos` children (by cost) as the new beam.
   4. Repeat until every deco in the beam is down to singleton clusters (or
      `min_parent_cluster_size`), or `target_num_clusters` is reached.
@@ -69,8 +71,9 @@ RDMs):
     python cluster_number_decomposition_optimization.py h4_square 6-31g 1.0 commutator --num-decos 6 --num-subdecos 8 --fiedler-reorder
 
 Run with --help for the full list of options. Most physically meaningful ones are probably
-(--min-parent-cluster-size (default: 1) )
+--min-parent-cluster-size (default: 1)
 --min-child-cluster-size (default: 1)
+--no-naturalize-children (default: False, i.e. naturalization ON)
 --target-num-clusters (default: run down to singleton clusters)
 --initial-basis (default: MOs)
 --fiedler-reorder (on initial basis - default: False)
@@ -206,7 +209,7 @@ class Decomposition:
     def num_clusters(self) -> int:
         return len(self.partition)
 
-
+# Defining a useful type alias
 CostFunctionConstructor = Callable[[RDMData, np.ndarray], Callable[[np.ndarray], float]]
 
 
@@ -218,6 +221,7 @@ class DecompositionOptimizerConfig:
     num_subdecos: int = 4  # splits attempted per deco per round
     min_parent_cluster_size: int = 1  # clusters at or below this size are never split
     min_child_cluster_size: int = 1  # neither child of a split may end up smaller than this
+    naturalize_children: bool = True  # diagonalize each split's two children's own 1-RDM blocks
     target_num_clusters: int | None = None  # stop once the beam reaches this many clusters
     max_rounds: int | None = None  # extra safety cap on rounds
     maxiter: int = 200  # L-BFGS-B iterations for each per-split local optimization
@@ -440,6 +444,7 @@ def permutation_to_unitary(perm) -> np.ndarray:
 # uniform (rdm_data, cluster_matrix) -> Callable[[params], float] signature.
 # =============================================================================
 
+# The following are functions that construct functions that construct functions, i.e., constructors of function constructors
 
 def make_variance_cost_constructor(var_exponent: int = 1) -> CostFunctionConstructor:
     def constructor(rdm_data: RDMData, cluster_matrix: np.ndarray):
@@ -562,6 +567,28 @@ def _optimize_restricted_rotation(
 # =============================================================================
 
 
+def _local_natural_orbital_rotation(
+    U_step: np.ndarray, D_cur: np.ndarray, clusters: list[list[int]], norb: int
+) -> np.ndarray:
+    """Rotation R (identity outside `clusters`' orbitals) that, composed on top of U_step
+    (i.e. R @ U_step), diagonalizes D_cur's own block for each cluster in `clusters`
+    independently -- each cluster's orbitals become that cluster's own natural orbitals.
+    D_cur is the 1-RDM in U_step's PARENT basis (not yet rotated by U_step); same
+    np.linalg.eigh(...).T convention as the global NatOs seeding in _build_initial_bases.
+    Exactly cost-neutral for every cost function in this module: N_C is basis-independent
+    within its own subspace, so this changes which orbital combination represents a cluster,
+    never the cost."""
+    Uc = U_step.conj()
+    D_in_target_basis = Uc @ D_cur @ U_step.T
+    R = np.eye(norb)
+    for cluster in clusters:
+        idx = np.asarray(cluster)
+        block = D_in_target_basis[np.ix_(idx, idx)].real
+        _, evecs = np.linalg.eigh(block)
+        R[np.ix_(idx, idx)] = evecs.T
+    return R
+
+
 def _split_one_cluster(
     deco: Decomposition,
     rdm_data_cur: RDMData,
@@ -571,11 +598,15 @@ def _split_one_cluster(
     cost_function_constructor: CostFunctionConstructor,
     maxiter: int,
     min_child_cluster_size: int = 1,
+    naturalize_children: bool = True,
 ) -> Decomposition:
     """Split deco.partition[cluster_idx] via Fiedler bisection (never leaving
-    either resulting subcluster smaller than min_child_cluster_size) and
-    re-optimize the rotation restricted to that cluster's orbitals, starting
-    from deco.U."""
+    either resulting subcluster smaller than min_child_cluster_size), re-optimize
+    the rotation restricted to that cluster's orbitals starting from deco.U, and
+    (if naturalize_children) diagonalize each child's own 1-RDM block afterward --
+    exactly cost-neutral (N_C is basis-independent within its own subspace), so
+    this only changes which orbital combination represents each cluster, never
+    the recorded cost."""
     norb = rdm_data_cur.norb
     V = deco.partition[cluster_idx]
     V1, V2 = fiedler_bipartition(n1, n2, V, min_child_size=min_child_cluster_size)
@@ -589,6 +620,10 @@ def _split_one_cluster(
 
     U_block = np.asarray(params_to_U_jax(jnp.array(x_opt_full), norb))
     U_child = U_block @ deco.U
+
+    if naturalize_children:
+        R = _local_natural_orbital_rotation(U_block, rdm_data_cur.D, [V1, V2], norb)
+        U_child = R @ U_child
 
     return Decomposition(partition=child_partition, U=U_child, cost=cost_opt)
 
@@ -611,13 +646,14 @@ def expand_decomposition(
     min_parent_cluster_size: int,
     maxiter: int,
     min_child_cluster_size: int = 1,
+    naturalize_children: bool = True,
 ) -> list[Decomposition]:
     """Produce up to `num_subdecos` child decompositions of `deco`: pick the
     (up to num_subdecos) clusters with the largest current number-variance
     (clusters not satisfying _can_split -- e.g. at or below min_parent_cluster_size,
     or too small to respect min_child_cluster_size on both sides of a
     split -- are never chosen), and split each independently via
-    _split_one_cluster."""
+    _split_one_cluster (see that function for naturalize_children)."""
     rdm_data_cur = rotate_rdm_data(rdm_data_ref, deco.U)
     n1, n2 = cluster_number_stats(rdm_data_cur, deco.partition)
 
@@ -636,6 +672,7 @@ def expand_decomposition(
         _split_one_cluster(
             deco, rdm_data_cur, n1, n2, cluster_idx, cost_function_constructor, maxiter,
             min_child_cluster_size=min_child_cluster_size,
+            naturalize_children=naturalize_children,
         )
         for cluster_idx in chosen
     ]
@@ -736,6 +773,7 @@ def run_decomposition_optimizer(
                     deco, rdm_data, cost_function_constructor,
                     config.num_subdecos, config.min_parent_cluster_size, config.maxiter,
                     min_child_cluster_size=config.min_child_cluster_size,
+                    naturalize_children=config.naturalize_children,
                 )
             )
         if not candidates:
@@ -770,7 +808,15 @@ def polish_decomposition(
     partition (deco.partition), starting from deco.U. Unlike the incremental,
     per-split block-restricted updates used during the beam search, this frees
     the whole norb x norb rotation at once, which can polish away suboptimality
-    left over from the greedy/hierarchical splitting process."""
+    left over from the greedy/hierarchical splitting process.
+
+    Note: the cost surface is exactly flat along within-cluster rotation
+    directions at any base point, but params_to_U_jax's coordinates are only
+    aligned with that flat direction at the exponential map's origin (x=0, i.e.
+    exactly a naturalize_children=True deco.U) -- once L-BFGS-B moves other
+    coordinates away from 0, there's no optimization pressure to drift off a
+    prior per-cluster naturalization, but no hard guarantee against incidental
+    drift either."""
     norb = rdm_data_ref.norb
     rdm_data_cur = rotate_rdm_data(rdm_data_ref, deco.U)
     cluster_matrix = partition_to_cluster_matrix(deco.partition, norb)
@@ -1266,6 +1312,17 @@ def create_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--no-naturalize-children", action="store_true",
+        help=(
+            "After each split, skip diagonalizing the two new clusters' own 1-RDM blocks "
+            "(natural orbitals within each cluster) -- on by default; this is exactly "
+            "cost-neutral for the split just made (every cost in this module only depends on "
+            "each cluster's aggregate occupation statistics, never on which specific orbital "
+            "combination represents it), so disabling it only affects which orbital basis "
+            "represents each cluster, not the search's cost values"
+        ),
+    )
+    parser.add_argument(
         "--target-num-clusters", type=int, default=None,
         help="Stop once this many clusters is reached (default: run down to singleton clusters)",
     )
@@ -1348,7 +1405,8 @@ def main() -> None:
     logger.info(
         f"cost function={args.cost_function}, num_decos={args.num_decos}, "
         f"num_subdecos={args.num_subdecos}, min_parent_cluster_size={args.min_parent_cluster_size}, "
-        f"min_child_cluster_size={args.min_child_cluster_size}"
+        f"min_child_cluster_size={args.min_child_cluster_size}, "
+        f"naturalize_children={not args.no_naturalize_children}"
     )
     if args.bond_angle is not None:
         logger.info(f"Bond angle={args.bond_angle}")
@@ -1367,6 +1425,7 @@ def main() -> None:
             num_subdecos=args.num_subdecos,
             min_parent_cluster_size=args.min_parent_cluster_size,
             min_child_cluster_size=args.min_child_cluster_size,
+            naturalize_children=not args.no_naturalize_children,
             target_num_clusters=args.target_num_clusters,
             max_rounds=args.max_rounds,
             maxiter=args.maxiter,
@@ -1400,6 +1459,7 @@ def main() -> None:
             "num_subdecos": args.num_subdecos,
             "min_parent_cluster_size": args.min_parent_cluster_size,
             "min_child_cluster_size": args.min_child_cluster_size,
+            "naturalize_children": not args.no_naturalize_children,
             "target_num_clusters": args.target_num_clusters,
             "initial_basis": args.initial_basis,
             "fiedler_reorder": args.fiedler_reorder,
