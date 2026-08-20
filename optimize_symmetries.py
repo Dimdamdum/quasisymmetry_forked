@@ -541,9 +541,19 @@ if __name__=="__main__":
     parser.add_argument("--seniority", action="store_true")
     add_optimize_workflow_args(parser)
     parser.add_argument("--multiply_bond_dim", type=int, default=None,
-                        help="bond dimension for MPO-MPS multiplies (--reference dmrg)")
+                        help="literal fit bond dimension for MPO-MPS multiplies "
+                             "(--reference dmrg); default derives it from the "
+                             "reference bond dim instead "
+                             "(ceil(reference_bond_dim * bra_bond_dim_factor))")
     parser.add_argument("--multiply_sweeps", type=int, default=8,
                         help="sweeps per MPO-MPS multiply (--reference dmrg)")
+    parser.add_argument(
+        "--dmrg_seed", type=int, default=None,
+        help="reseed block2's RNG before the reference DMRG solve (--reference "
+             "dmrg only), for a reproducible reference energy across reruns "
+             "(default: unseeded, matching prior behavior; without this, "
+             "reruns can drift by ~1e-5-1e-4 Ha)",
+    )
     parser.add_argument(
         "--cost_function",
         choices=("NC", "variance", "decoupled", "fixed_sector", "switching_sector"),
@@ -584,6 +594,35 @@ if __name__=="__main__":
         type=int,
         default=5,
         help="maximum sector switches for switching_sector mode",
+    )
+    parser.add_argument(
+        "--ftol", type=float, default=2.220446049250313e-09,
+        help="L-BFGS-B ftol: stop when relative reduction in cost <= ftol "
+             "(scipy default ~2.22e-9, i.e. factr=1e7; lower = stricter, keeps optimizing longer)",
+    )
+    parser.add_argument(
+        "--gtol", type=float, default=1e-5,
+        help="L-BFGS-B gtol: stop when max projected gradient component <= gtol (scipy default 1e-5)",
+    )
+    parser.add_argument(
+        "--eps", type=float, default=1e-8,
+        help="L-BFGS-B finite-difference step for the gradient (scipy default ~1e-8; "
+             "raise this if the cost function is noisy, e.g. truncated DMRG). Ignored "
+             "unless --finite_difference is set (--reference dmrg uses the analytic "
+             "gradient by default, which has no finite-difference step).",
+    )
+    parser.add_argument(
+        "--finite_difference", action="store_true",
+        help="--reference dmrg only: use L-BFGS-B's own finite-difference gradient "
+             "instead of DMRGOrbitalCosts.commutator_and_gradient/"
+             "variance_and_gradient (src/dmrg_costs.py), which is the default. The "
+             "analytic gradient is ~20-60x fewer DMRG cost evaluations per step and "
+             "avoids the truncated-multiply bias/noise that made finite differences "
+             "unsafe here (see diagnostics/phase2_analytic_gradient/); this flag "
+             "exists for comparison/debugging. Support-1 parity rows only (analytic "
+             "path raises NotImplementedError otherwise); see "
+             "diagnostics/phase2_analytic_gradient/tier1_tier2_FINDINGS.md for "
+             "validation and known bond-dimension-margin caveats.",
     )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--outname", default=None)
@@ -635,6 +674,7 @@ if __name__=="__main__":
             config=DMRGConfig(
                 max_bond_dim=args.bond_dim,
                 n_sweeps=max(12, args.bond_dim // 20 + 8),
+                seed=args.dmrg_seed,
             ),
             multiply=MultiplyConfig(
                 bond_dim=args.multiply_bond_dim,
@@ -657,22 +697,36 @@ if __name__=="__main__":
         print("DMRG reference energy: {0:4.6f}".format(dmrg_result.energy))
         print("wavefunction store: {}".format(dmrg_result.store_dir))
 
-        f = costs.cost_function(args.cost_function)
+        use_analytic_gradient = not args.finite_difference
+        if use_analytic_gradient:
+            f = costs.cost_function_and_gradient(args.cost_function)
+        else:
+            f = costs.cost_function(args.cost_function)
         x0 = (
             np.loadtxt(args.x0)
             if args.x0
             else np.zeros(n_params(solver.n_sites, rotation_pairs))
         )
-        cost_before = f(x0)
+        cost_before = f(x0)[0] if use_analytic_gradient else f(x0)
         print("before optimization: {0:4.6f}".format(cost_before))
 
         t_start = time.time()
         if args.optimizer_maxiter > 0:
+            minimize_options = {
+                "maxiter": args.optimizer_maxiter,
+                "ftol": args.ftol,
+                "gtol": args.gtol,
+            }
+            if not use_analytic_gradient:
+                # eps is the finite-difference step scipy uses to build its own
+                # gradient; meaningless once we hand it an exact analytic one.
+                minimize_options["eps"] = args.eps
             res = scipy.optimize.minimize(
                 f,
                 x0,
                 method="L-BFGS-B",
-                options={"maxiter": args.optimizer_maxiter},
+                jac=True if use_analytic_gradient else None,
+                options=minimize_options,
                 callback=callback if args.verbose else None,
             )
             elapsed = time.time() - t_start
