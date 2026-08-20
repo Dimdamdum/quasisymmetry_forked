@@ -54,10 +54,35 @@ def main() -> None:
     parser.add_argument("--x0", default=None, help="initial rotation parameters")
     parser.add_argument("--bond_dim", type=int, default=250)
     parser.add_argument("--n_sweeps", type=int, default=20)
+    parser.add_argument(
+        "--dmrg_seed", type=int, default=None,
+        help="reseed block2's RNG before the reference DMRG solve, for a "
+             "reproducible reference energy across reruns (default: "
+             "unseeded, matching prior behavior; without this, reruns can "
+             "drift by ~1e-5-1e-4 Ha)",
+    )
     parser.add_argument("--n_threads", type=int, default=4)
     parser.add_argument("--wavefunction_dir", default=None)
-    parser.add_argument("--multiply_bond_dim", type=int, default=None)
+    parser.add_argument(
+        "--multiply_bond_dim", type=int, default=None,
+        help="literal fit bond dimension for MPO-MPS multiplies; default "
+             "derives it from the reference bond dim instead "
+             "(ceil(reference_bond_dim * bra_bond_dim_factor))",
+    )
     parser.add_argument("--multiply_sweeps", type=int, default=8)
+    parser.add_argument(
+        "--finite_difference", action="store_true",
+        help="use L-BFGS-B's own finite-difference gradient instead of "
+             "DMRGOrbitalCosts.commutator_and_gradient/variance_and_gradient "
+             "(src/dmrg_costs.py), which is the default. The analytic "
+             "gradient is ~20-60x fewer DMRG cost evaluations per step and "
+             "avoids the truncated-multiply bias/noise that made finite "
+             "differences unsafe here (see diagnostics/phase2_analytic_gradient/); "
+             "this flag exists for comparison/debugging. Support-1 parity "
+             "rows only (analytic path raises NotImplementedError otherwise); "
+             "see diagnostics/phase2_analytic_gradient/tier1_tier2_FINDINGS.md "
+             "for validation and known bond-dimension-margin caveats.",
+    )
     parser.add_argument("--maxiter", type=int, default=100)
     parser.add_argument("--no_reuse", action="store_true")
     parser.add_argument("--verbose", action="store_true")
@@ -74,7 +99,9 @@ def main() -> None:
         args.molpath,
         parity_matrix,
         store_dir=store_dir,
-        config=DMRGConfig(max_bond_dim=args.bond_dim, n_sweeps=args.n_sweeps),
+        config=DMRGConfig(
+            max_bond_dim=args.bond_dim, n_sweeps=args.n_sweeps, seed=args.dmrg_seed,
+        ),
         multiply=MultiplyConfig(
             bond_dim=args.multiply_bond_dim,
             n_sweeps=args.multiply_sweeps,
@@ -96,17 +123,23 @@ def main() -> None:
     print("DMRG reference energy: {0:4.6f}".format(result.energy))
     print("wavefunction store: {}".format(result.store_dir))
 
-    f = costs.cost_function(args.cost_function)
+    use_analytic_gradient = not args.finite_difference
+    if use_analytic_gradient:
+        f = costs.cost_function_and_gradient(args.cost_function)
+    else:
+        f = costs.cost_function(args.cost_function)
     x0 = (
         np.zeros(n_params(solver.n_sites, rotation_pairs))
         if args.x0 is None
         else np.loadtxt(args.x0)
     )
-    print("before optimization: {0:4.6f}".format(f(x0)))
+    cost_before = f(x0)[0] if use_analytic_gradient else f(x0)
+    print("before optimization: {0:4.6f}".format(cost_before))
     res = scipy.optimize.minimize(
         f,
         x0,
         method="L-BFGS-B",
+        jac=True if use_analytic_gradient else None,
         options={"maxiter": args.maxiter},
         callback=callback if args.verbose else None,
     )

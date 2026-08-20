@@ -43,12 +43,10 @@ def n_params(norb: int, pairs: PairList | None = None) -> int:
     return len(pairs)
 
 
-def params_to_U(
-    x: np.ndarray,
-    norb: int,
-    pairs: PairList | None = None,
-) -> np.ndarray:
-    """Build ``U = expm(A(x))`` from upper-triangle (or restricted) parameters."""
+def _generator(x: np.ndarray, norb: int, pairs: PairList | None = None) -> np.ndarray:
+    """Skew-symmetric ``A(x) = sum_i x_i K_i`` from upper-triangle (or
+    restricted) parameters -- shared by ``params_to_U`` and
+    ``params_to_U_and_frechet`` so both build ``A`` identically."""
     x = np.asarray(x, dtype=float).ravel()
     expected = n_params(norb, pairs)
     if x.size != expected:
@@ -63,7 +61,45 @@ def params_to_U(
         for k, (i, j) in enumerate(pairs):
             generator[i, j] = x[k]
     generator -= generator.T
-    return scipy.linalg.expm(generator)
+    return generator
+
+
+def params_to_U(
+    x: np.ndarray,
+    norb: int,
+    pairs: PairList | None = None,
+) -> np.ndarray:
+    """Build ``U = expm(A(x))`` from upper-triangle (or restricted) parameters."""
+    return scipy.linalg.expm(_generator(x, norb, pairs))
+
+
+def params_to_U_and_frechet(
+    x: np.ndarray,
+    norb: int,
+    pairs: PairList | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``U(x)`` and ``dU/dx_i`` for every parameter ``i``.
+
+    ``dU/dx_i`` is the Fréchet derivative of ``expm`` at ``A(x)`` in
+    direction ``K_i`` (the elementary skew generator for parameter ``i``) --
+    exact at any ``x``, not just near the identity. Used by the analytic
+    orbital-rotation gradient in ``src/dmrg_costs.py``. Returns ``(U, L)`` with
+    ``L.shape == (n_params(norb, pairs), norb, norb)``.
+    """
+    generator = _generator(x, norb, pairs)
+    idx = np.triu_indices(norb, k=1) if pairs is None else tuple(np.array(pairs).T)
+    n_par = len(idx[0])
+    K = np.zeros((n_par, norb, norb))
+    for k in range(n_par):
+        i, j = int(idx[0][k]), int(idx[1][k])
+        K[k, i, j] = 1.0
+        K[k, j, i] = -1.0
+
+    U = scipy.linalg.expm(generator)
+    L = np.empty_like(K)
+    for k in range(n_par):
+        _, L[k] = scipy.linalg.expm_frechet(generator, K[k])
+    return U, L
 
 
 def load_orbital_irreps(molpath: str | Path) -> np.ndarray | None:

@@ -178,6 +178,55 @@ class TestDMRGOrbitalCosts(unittest.TestCase):
             self.costs.cost_function("variance")(x), self.costs.variance(x), places=10
         )
 
+    def test_explicit_multiply_bond_dim_not_rescaled(self):
+        # multiply.bond_dim, when set explicitly, is the literal fit bond
+        # dimension -- bra_bond_dim_factor must not also be applied on top of
+        # it (that was a Phase 1 double-scaling bug: an explicit override
+        # silently came out ~1.5x larger than requested).
+        costs = DMRGOrbitalCosts(
+            self.solver, self.parity,
+            multiply=MultiplyConfig(bond_dim=42, bra_bond_dim_factor=1.5),
+        )
+        self.assertEqual(costs._bra_bond_dim(), 42)
+
+    def test_two_instances_same_store_do_not_interfere(self):
+        # Every DMRGOrbitalCosts instance tags its working MPS copies with a
+        # unique per-instance id (see the module-level comment on
+        # _next_instance_id). Before that fix, a second instance sharing the
+        # same store_dir could collide with the first's "COST_KET" tag and
+        # silently corrupt it mid-evaluation.
+        x = np.zeros(comb(self.norb, 2))
+        multiply = MultiplyConfig(bond_dim=60, n_sweeps=4)
+        c1 = DMRGOrbitalCosts(self.solver, self.parity, multiply=multiply)
+        v1_before = c1.commutator(x)
+        c2 = DMRGOrbitalCosts(self.solver, self.parity, multiply=multiply)
+        _ = c2.commutator(x)
+        v1_after = c1.commutator(x)
+        self.assertAlmostEqual(v1_before, v1_after, places=8)
+
+    def test_analytic_gradient_matches_finite_difference(self):
+        # Regression test for the Tier 1a validation done ad hoc during Phase
+        # 2 (diagnostics/phase2_analytic_gradient/): commutator_and_gradient's
+        # analytic gradient should agree with a (large-step, truncation-noise
+        # -tolerant) central finite difference of commutator() itself.
+        row = np.array([[1, 0, 0, 0, 0]])  # support-1: required by the analytic path
+        costs = DMRGOrbitalCosts(
+            self.solver, row,
+            multiply=MultiplyConfig(bond_dim=100, n_sweeps=8),
+        )
+        rng = np.random.default_rng(7)
+        x = rng.normal(scale=0.1, size=comb(self.norb, 2))
+        _, grad = costs.commutator_and_gradient(x)
+
+        h = 1e-4
+        for i in (0, comb(self.norb, 2) // 2, comb(self.norb, 2) - 1):
+            e_i = np.zeros_like(x)
+            e_i[i] = 1.0
+            fd = (costs.commutator(x + h * e_i) - costs.commutator(x - h * e_i)) / (2 * h)
+            self.assertAlmostEqual(
+                grad[i], fd, delta=max(abs(fd), abs(grad[i])) * 0.05 + 1e-6
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

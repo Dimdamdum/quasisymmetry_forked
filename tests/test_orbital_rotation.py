@@ -13,6 +13,7 @@ from src.orbital_rotation import (
     n_params,
     pairs_from_oo_data,
     params_to_U,
+    params_to_U_and_frechet,
     rotation_from_oo_data,
 )
 
@@ -96,3 +97,19 @@ class TestOrbitalRotationPacking:
         data = {"rotation": x.tolist()}
         assert pairs_from_oo_data(data, norb) is None
         np.testing.assert_allclose(rotation_from_oo_data(data, norb), np.eye(norb))
+
+    def test_frechet_derivative_at_identity_matches_generators(self):
+        # d/dx_i expm(A(x))|_{x=0} = K_i exactly, for every elementary skew
+        # generator K_i -- the base case the analytic orbital-rotation
+        # gradient (src/dmrg_costs.py) builds on for every other x.
+        norb = 5
+        x = np.zeros(comb(norb, 2))
+        U, L = params_to_U_and_frechet(x, norb)
+        np.testing.assert_allclose(U, np.eye(norb), atol=1e-14)
+        idx = np.triu_indices(norb, k=1)
+        for k in range(L.shape[0]):
+            i, j = int(idx[0][k]), int(idx[1][k])
+            expected = np.zeros((norb, norb))
+            expected[i, j] = 1.0
+            expected[j, i] = -1.0
+            np.testing.assert_allclose(L[k], expected, atol=1e-12)
