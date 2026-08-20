@@ -52,12 +52,12 @@ you know what you're optimizing for.
 
 Other important empirical fact (again, valid for variance cost): at each round,
 raw cost prefers splitting the biggest cluster C into (|C| - 1) + 1 subclusters.
-But again, this preference may not correspond to low values of downstream metrics.
+But again, this preference may not always correspond to low values of downstream metrics.
 Therefore, the minimal cluster size and target number of clusters are probably two
 important hyperparameters (CLI options --min-parent-cluster-size and --target-num-clusters).
 Note --min-parent-cluster-size only controls which clusters remain eligible to be split
 further -- it does NOT prevent a single split from producing a small subcluster
-(a cluster larger than --min-parent-cluster-size can still be split (|C|-1)+1). To
+(a cluster larger than --min-parent-cluster-size can still be split like (|C|-1)+1). To
 directly rule out that pattern (or any subcluster below a given size), use
 --min-child-cluster-size instead: it constrains the split itself, so neither
 resulting subcluster can ever be smaller than the given value.

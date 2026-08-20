@@ -525,6 +525,8 @@ def extract_rdms(solver: Block2DMRGSolver, mps_tag: str, with_34_rdms=False) -> 
     rdm1_a, rdm1_b = solver.driver.get_1pdm(mps)
     D = rdm1_a + rdm1_b
     logger.info(f"D shape: {D.shape}, trace: {np.trace(D).round(8)}")
+    nons, evecs = np.linalg.eigh(D)
+    logger.info(f"NONs: {nons}")
 
     rdm2_aa, rdm2_ab, rdm2_bb = solver.driver.get_2pdm(mps)
     Gamma = rdm2_aa + rdm2_bb + rdm2_ab + rdm2_ab.transpose(1, 0, 3, 2)
