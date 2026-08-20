@@ -1025,6 +1025,7 @@ class Block2DMRGSolver:
         penalty: float = 10.0,
         config: DMRGConfig | None = None,
         verify_tol: float = 1e-2,
+        mps_tag: str | None = None,
     ) -> DMRGResult:
         """Sector-restricted ground state of the decoupled Hamiltonian.
 
@@ -1036,7 +1037,7 @@ class Block2DMRGSolver:
         sector within ``verify_tol`` (e.g. because the penalty was too weak).
         """
         sector_label = tuple(int(b) for b in sector_label)
-        tag = "SECTOR_" + "".join(map(str, sector_label))
+        tag = mps_tag or ("SECTOR_" + "".join(map(str, sector_label)))
         config = config or DMRGConfig(mps_tag=tag)
         if config.mps_tag != tag:
             config = DMRGConfig(**{**asdict(config), "mps_tag": tag})
@@ -1152,6 +1153,15 @@ class Block2DMRGSolver:
             self.expectation(self.electronic_hamiltonian_mpo(), ket=ket)
             + self.ecore
         )
+
+    def spin_resolved_rdms(self, ket=None) -> tuple[np.ndarray, np.ndarray]:
+        """Return Block2 conventional spin-resolved one- and two-particle RDMs."""
+        if ket is None:
+            ket = self.get_mps()
+        self._activate()
+        rdm1 = self.driver.get_conventional_1pdm(ket, iprint=0)
+        rdm2 = self.driver.get_conventional_2pdm(ket, iprint=0)
+        return np.asarray(rdm1), np.asarray(rdm2)
 
     def symmetry_expectations(
         self, parity_matrix: np.ndarray, ket=None
