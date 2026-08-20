@@ -1,8 +1,0 @@
-[workflow] reference=fci  (wavefunction / energy used as truth)
-[workflow] cost_engine=statevector  (from --reference)
-[workflow] cost_function=fixed_sector
-[workflow] orbital_rotation=full
-orbital_rotation=full: N_free=45, N_sym=45
-before optimization: -116.501403
-CONVERGENCE: NORM OF PROJECTED GRADIENT <= PGTOL
-optimized: -116.501403
