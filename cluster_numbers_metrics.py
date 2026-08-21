@@ -608,7 +608,7 @@ def optimize_orbital_basis(
     spec, evecs = np.linalg.eigh(D_MOs)
     U_NatOs = evecs.T
     U_NatOs_conj = np.conj(U_NatOs)
-    D_NatOs = U_NatOs_conj @ D_MOs @ U_NatOs.T
+    D_NatOs = U_NatOs_conj @ D_MOs @ U_NatOs.T # same as diag(spec) -- keeping this convention for comparison with, e.g., Gamma_NatOs
     Gamma_NatOs = np.einsum(
         "pi,qj,rk,sl,ijkl->pqrs", 
         U_NatOs_conj, U_NatOs_conj, U_NatOs, U_NatOs, Gamma_MOs, 

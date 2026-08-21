@@ -171,7 +171,7 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Data structures
+# Data structures (human verified ✓)
 # =============================================================================
 
 
@@ -243,7 +243,7 @@ class DecompositionOptimizerConfig:
 
 
 # =============================================================================
-# Partition <-> cluster_matrix helpers
+# Partition <-> cluster_matrix helpers (human verified ✓)
 # =============================================================================
 
 
@@ -271,7 +271,7 @@ def validate_partition(partition: list[list[int]], norb: int) -> None:
 
 
 # =============================================================================
-# RDM / integral rotation
+# RDM / integral rotation (human verified ✓)
 # =============================================================================
 
 
@@ -317,7 +317,7 @@ def rotate_rdm_data(rdm_data: RDMData, U: np.ndarray) -> RDMData:
 
 
 # =============================================================================
-# Cluster statistics and Fiedler splitting
+# Cluster statistics and Fiedler splitting (human verified ✓)
 # =============================================================================
 
 
@@ -359,7 +359,9 @@ def fiedler_bipartition(
     just enough to satisfy this (a no-op whenever the natural cut already
     does, e.g. always at the default min_child_size=1). Raises ValueError if
     `cluster` is too small for any split to satisfy this
-    (len(cluster) < 2 * min_child_size)."""
+    (len(cluster) < 2 * min_child_size).
+    
+    Returns a couple of lists of integers that bipartition the initial cluster."""
     cluster = list(cluster)
     k = len(cluster)
     if k < 2:
@@ -433,18 +435,20 @@ def permutation_to_unitary(perm) -> np.ndarray:
 
 
 # =============================================================================
-# Cost function adapters
+# Cost function adapters (human verified ✓)
 #
 # run_decomposition_optimizer always calls cost_function_constructor(rdm_data,
 # cluster_matrix), where rdm_data holds tensors already rotated into the basis
 # being scored. The existing cost-function builders in
 # src.cluster_number_operators take differing, cost-specific argument lists
 # (e.g. extremality_cost only needs D; number_commutator_cost_v1 needs h1e,
-# g2e_full, and up to the 4-RDM); these factories adapt each of them to the
+# g2e_full, and up to the 4-RDM); the factories below adapt each of them to the
 # uniform (rdm_data, cluster_matrix) -> Callable[[params], float] signature.
 # =============================================================================
 
-# The following are functions that construct functions that construct functions, i.e., constructors of function constructors
+# Tldr: The following are functions that construct functions that construct functions,
+# i.e., constructors of function constructors; they uniformize conventions of
+# existing function constructors, so they can all be called in the same way
 
 def make_variance_cost_constructor(var_exponent: int = 1) -> CostFunctionConstructor:
     def constructor(rdm_data: RDMData, cluster_matrix: np.ndarray):
@@ -505,7 +509,7 @@ def make_commutator_cost_constructor(version: str = "v2") -> CostFunctionConstru
 
 
 # =============================================================================
-# Restricted-rotation optimization core
+# Restricted-rotation optimization core (human verified ✓)
 # =============================================================================
 
 
@@ -531,7 +535,9 @@ def _optimize_restricted_rotation(
     maxiter: int,
 ) -> tuple[np.ndarray, float]:
     """Minimize f_full over the rotation parameters at `free_indices` only (all
-    others held at 0, i.e. that part of the rotation stays the identity).
+    others held at 0, i.e. that part of the rotation stays the identity;
+    take this into account when building the input).
+    free_indices is typically obtained with _block_flat_indices.
     free_indices=None frees all comb(norb, 2) parameters (a full joint
     reoptimization). Returns (x_opt_full, cost_opt); x_opt_full always has the
     full comb(norb, 2) length, zero-padded outside free_indices."""
@@ -580,14 +586,15 @@ def _local_natural_orbital_rotation(
     never the cost."""
     Uc = U_step.conj()
     D_in_target_basis = Uc @ D_cur @ U_step.T
-    R = np.eye(norb)
+    R = np.eye(norb, dtype=complex)
     for cluster in clusters:
         idx = np.asarray(cluster)
-        block = D_in_target_basis[np.ix_(idx, idx)].real
+        block = D_in_target_basis[np.ix_(idx, idx)]
         _, evecs = np.linalg.eigh(block)
         R[np.ix_(idx, idx)] = evecs.T
     return R
 
+# checked until here - friday 21/8
 
 def _split_one_cluster(
     deco: Decomposition,

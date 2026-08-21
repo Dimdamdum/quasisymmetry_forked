@@ -1,3 +1,5 @@
+# AI-generated
+
 """Tests for cluster_number_decomposition_optimization.py.
 
 These don't re-validate primitives already covered by
