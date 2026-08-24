@@ -569,7 +569,7 @@ def _optimize_restricted_rotation(
 
 
 # =============================================================================
-# Splitting / beam expansion
+# Splitting / beam expansion (human verified ✓)
 # =============================================================================
 
 
@@ -586,15 +586,14 @@ def _local_natural_orbital_rotation(
     never the cost."""
     Uc = U_step.conj()
     D_in_target_basis = Uc @ D_cur @ U_step.T
-    R = np.eye(norb, dtype=complex)
+    R = np.eye(norb, dtype=D_in_target_basis.dtype)
     for cluster in clusters:
         idx = np.asarray(cluster)
         block = D_in_target_basis[np.ix_(idx, idx)]
         _, evecs = np.linalg.eigh(block)
-        R[np.ix_(idx, idx)] = evecs.T
+        R[np.ix_(idx, idx)] = evecs.T # this transposition matches the way we transform
+        # the 1RDMs; compare with U_NatOs = evecs.T in cluster_numbers_metrics.py
     return R
-
-# checked until here - friday 21/8
 
 def _split_one_cluster(
     deco: Decomposition,
@@ -634,7 +633,6 @@ def _split_one_cluster(
 
     return Decomposition(partition=child_partition, U=U_child, cost=cost_opt)
 
-
 def _can_split(cluster_size: int, min_parent_cluster_size: int, min_child_cluster_size: int) -> bool:
     """Whether a cluster of this size is eligible to be split at all: strictly
     larger than min_parent_cluster_size (else it's already "small enough" and never
@@ -643,7 +641,6 @@ def _can_split(cluster_size: int, min_parent_cluster_size: int, min_child_cluste
     fiedler_bipartition(..., min_child_size=min_child_cluster_size) to
     succeed on a cluster of this size)."""
     return cluster_size > min_parent_cluster_size and cluster_size >= 2 * min_child_cluster_size
-
 
 def expand_decomposition(
     deco: Decomposition,
@@ -662,7 +659,7 @@ def expand_decomposition(
     split -- are never chosen), and split each independently via
     _split_one_cluster (see that function for naturalize_children)."""
     rdm_data_cur = rotate_rdm_data(rdm_data_ref, deco.U)
-    n1, n2 = cluster_number_stats(rdm_data_cur, deco.partition)
+    n1, n2 = cluster_number_stats(rdm_data_cur, deco.partition) # notice: using current/rotated rdm data
 
     splittable = [
         i
@@ -684,6 +681,7 @@ def expand_decomposition(
         for cluster_idx in chosen
     ]
 
+# checked till here - august 24
 
 # =============================================================================
 # Main beam search
