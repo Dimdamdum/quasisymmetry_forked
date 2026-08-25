@@ -929,6 +929,71 @@ def _run_dmrg_and_build_rdm_data(
     return rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec
 
 
+def _run_dmrg_and_build_rdm_data_from_fcidump(
+    args: argparse.Namespace,
+) -> tuple[RDMData, dict, Any, float, np.ndarray, np.ndarray, float, tuple[int, int]]:
+    """FCIDUMP counterpart of _run_dmrg_and_build_rdm_data: builds the DMRG
+    solver directly from a precomputed Hamiltonian (e.g. a CASSCF
+    active-space FCIDUMP written by another workflow) via
+    Block2DMRGSolver.from_fcidump, instead of building a molecule + HF
+    reference from --molecule/--basis-set/--bond-length -- the physics comes
+    entirely from the FCIDUMP. Of those three CLI arguments, --molecule and
+    --basis-set are then only used as free-form labels for the output/plots
+    directory tree (see _geometry_output_subpath) and metadata; --bond-length
+    is not used at all (still required positionally, but discarded -- see
+    _geometry_output_subpath and main()'s metadata construction). Unlike
+    compute_dmrg, this skips the DMRG-vs-HF variational sanity check: an
+    active-space FCIDUMP has no comparable whole-system HF energy to check
+    against.
+
+    Returns: rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec
+    """
+    import pyscf.ao2mo
+    from cluster_numbers_metrics import extract_rdms
+    from src.dmrg_solver import Block2DMRGSolver, DMRGConfig, restore_g2e, solve_or_load_ground_state
+
+    fcidump_path = Path(args.fcidump)
+    logger.info(f"Loading Hamiltonian from FCIDUMP: {fcidump_path}")
+
+    store_dir = (
+        Path(args.wavefunction_dir)
+        / f"dmrg_fcidump_{fcidump_path.stem}_bd{args.bond_dim}_sw{args.n_sweeps}"
+    )
+    solver = Block2DMRGSolver.from_fcidump(fcidump_path, store_dir=store_dir, n_threads=args.n_threads)
+    norb = solver.n_sites
+    nelec = ((solver.n_elec + solver.spin) // 2, (solver.n_elec - solver.spin) // 2)
+
+    logger.info(f"Number of orbitals: {norb}")
+    logger.info(f"Number of electrons: {nelec}")
+    logger.info(f"Space dimension: {comb(norb, nelec[0]) * comb(norb, nelec[1])}")
+
+    logger.info("Running DMRG...")
+    result = solve_or_load_ground_state(
+        solver,
+        config=DMRGConfig(max_bond_dim=args.bond_dim, n_sweeps=args.n_sweeps),
+        reuse=not args.no_reuse,
+    )
+    dmrg_energy = result.energy
+    logger.info(f"DMRG Energy: {dmrg_energy:.10f} Ha")
+
+    h1e = solver.h1e
+    ecore = solver.ecore
+    g2e_full = restore_g2e(solver.g2e, norb)
+    g2e = pyscf.ao2mo.restore(4, g2e_full, norb)  # match compute_dmrg's packed convention
+
+    if args.cost_function == "commutator":
+        D, Gamma, rdm3, rdm4 = extract_rdms(solver, result.mps_tag, with_34_rdms=True)
+        rdm_data = RDMData(D=D, Gamma=Gamma, rdm3=rdm3, rdm4=rdm4, h1e=h1e, g2e_full=g2e_full)
+    else:
+        D, Gamma = extract_rdms(solver, result.mps_tag, with_34_rdms=False)
+        rdm_data = RDMData(D=D, Gamma=Gamma)
+
+    dmrg_metadata = {
+        "nelec": [int(x) for x in nelec], "dmrg_energy": float(dmrg_energy), "fcidump": str(fcidump_path),
+    }
+    return rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec
+
+
 # -----------------------------------------------------------------------------
 # K-sectors / K-states sector analysis for the winning decompositions
 #
@@ -1150,8 +1215,9 @@ def _run_sector_analysis(
     metadata = {
         "molecule": args.molecule,
         "basis_set": args.basis_set,
-        "bond_length": args.bond_length,
-        "bond_angle": args.bond_angle,
+        "bond_length": args.bond_length if args.fcidump is None else None,
+        "bond_angle": args.bond_angle if args.fcidump is None else None,
+        "fcidump": args.fcidump,
         "max_elec_transfers": args.max_transfers,
         "timestamp": get_timestamp(),
         "git_hash": get_git_hash(),
@@ -1184,6 +1250,12 @@ def _run_sector_analysis(
 def _geometry_output_subpath(args: argparse.Namespace) -> Path:
     molecule = args.molecule.lower()
     basis_set = args.basis_set.lower()
+    if args.fcidump is not None:
+        # No molecule/bond-length geometry to key on here -- nest under the
+        # source FCIDUMP's filename instead. molecule/basis_set are then just
+        # free-form labels the caller chose for this Hamiltonian (bond_length
+        # is unused in this mode).
+        return Path(molecule) / basis_set / f"fcidump_{Path(args.fcidump).stem}"
     bond_length_str = f"{args.bond_length:.4f}".replace(".", "_")
     path = Path(molecule) / basis_set / f"bond_{bond_length_str}"
     if args.bond_angle is not None:
@@ -1276,20 +1348,43 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     # Required arguments (same molecule/basis_set/bond_length/cost_function
-    # convention as cluster_numbers_metrics.py)
+    # convention as cluster_numbers_metrics.py). When --fcidump is given,
+    # molecule/basis_set/bond_length are NOT used to build a molecule/HF
+    # reference: molecule/basis_set instead become free-form labels for the
+    # output/plots directory tree (see _geometry_output_subpath) and
+    # metadata, while bond_length is discarded entirely (still required
+    # positionally, but unused -- pass any placeholder float). E.g.
+    # `fe2s2 casscf_10e10o 0 commutator --fcidump path/to/FCIDUMP`.
     parser.add_argument(
         "molecule", type=str,
-        choices=["h2", "h2o", "n2", "lih", "h4_linear", "h4_square", "h4_rectangle"],
-        help="Molecule to analyze",
+        help=(
+            "Molecule to analyze (one of h2, h2o, n2, lih, h4_linear, h4_square, h4_rectangle), "
+            "or a free-form label when --fcidump is given"
+        ),
     )
-    parser.add_argument("basis_set", type=str, help="Basis set (e.g., sto-3g, 6-31g)")
-    parser.add_argument("bond_length", type=float, help="Bond length in Angstrom")
+    parser.add_argument(
+        "basis_set", type=str,
+        help="Basis set (e.g., sto-3g, 6-31g), or a free-form label when --fcidump is given",
+    )
+    parser.add_argument(
+        "bond_length", type=float,
+        help="Bond length in Angstrom (unused, but still required, when --fcidump is given)",
+    )
     parser.add_argument(
         "cost_function", type=str,
         help="Cost function type (variance, eval_eq, extremality, mixed, commutator)",
     )
 
     parser.add_argument("--bond-angle", type=float, default=None, help="Bond angle in degrees (for H2O)")
+    parser.add_argument(
+        "--fcidump", type=str, default=None,
+        help=(
+            "Path to an FCIDUMP file with a precomputed Hamiltonian (e.g. a CASSCF active-space "
+            "Hamiltonian). When given, skips building a molecule/HF reference from "
+            "molecule/basis_set/bond_length entirely and runs DMRG directly on this Hamiltonian "
+            "(via Block2DMRGSolver.from_fcidump)."
+        ),
+    )
 
     # DMRG parameters
     parser.add_argument("--bond-dim", type=int, default=150, help="DMRG bond dimension (default: 150)")
@@ -1415,10 +1510,23 @@ def main() -> None:
     if args.bond_angle is not None:
         logger.info(f"Bond angle={args.bond_angle}")
 
+    _known_molecules = {"h2", "h2o", "n2", "lih", "h4_linear", "h4_square", "h4_rectangle"}
+    if args.fcidump is None and args.molecule.lower() not in _known_molecules:
+        logger.error(
+            f"Unsupported molecule: {args.molecule}. Supported: {sorted(_known_molecules)} "
+            "(or pass --fcidump to load a precomputed Hamiltonian instead)."
+        )
+        exit(1)
+
     start_time = time.time()
 
     try:
-        rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec = _run_dmrg_and_build_rdm_data(args)
+        if args.fcidump is not None:
+            rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec = (
+                _run_dmrg_and_build_rdm_data_from_fcidump(args)
+            )
+        else:
+            rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec = _run_dmrg_and_build_rdm_data(args)
         norb = rdm_data.norb
 
         cost_function_constructor = _build_cost_function_constructor(args.cost_function, args.var_exponent)
@@ -1453,8 +1561,8 @@ def main() -> None:
         metadata = {
             "molecule": args.molecule,
             "basis_set": args.basis_set,
-            "bond_length": args.bond_length,
-            "bond_angle": args.bond_angle,
+            "bond_length": args.bond_length if args.fcidump is None else None,
+            "bond_angle": args.bond_angle if args.fcidump is None else None,
             "cost": args.cost_function,
             "timestamp": get_timestamp(),
             "git_hash": get_git_hash(),
