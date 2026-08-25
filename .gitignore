@@ -9,4 +9,6 @@ plots_*/
 *.~lock*
 wavefunctions/
 quasisym/
-logs/
+logs*/
+fakeintel.c
+libfakeintel.so
