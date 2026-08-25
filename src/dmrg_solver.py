@@ -195,6 +195,25 @@ class DMRGConfig:
     mps_tag: str = "GS"
     bond_dims: tuple[int, ...] = field(default=())
     noises: tuple[float, ...] = field(default=())
+    seed: int | None = None
+    """When set, reseeds block2's global RNG immediately before this
+    solve's random initial-guess MPS is drawn, making the resulting ground
+    state reproducible across processes and across repeated solves in one
+    process. Default ``None`` preserves prior (unseeded) behavior exactly,
+    since forcing a fixed seed by default was found (adversarial review of
+    diagnostics/phase3_reference_quality_gate/) to shift already-converged
+    energies enough to flip a tight-tolerance test -- i.e. it is not a
+    strict improvement for every existing caller and needs a case-by-case
+    opt-in rather than a silent default change. Without this, two DMRG
+    solves of the same system (same process or fresh processes) can
+    converge to bit-different ground-state MPS and energies differing by
+    ~1e-5-1e-6 Ha -- the same class of bug already fixed elsewhere in this
+    codebase for the cost machinery (see DMRGOrbitalCosts.rng_seed in
+    src/dmrg_costs.py), but here left opt-in for the ground-state solve
+    itself. See diagnostics/phase3_reference_quality_gate/FINDINGS.md for
+    where this matters concretely (razor's-edge reference-quality verdicts)
+    and diagnostics/phase3_reference_quality_gate/verify_against_known_configs.py
+    for a caller that opts in."""
 
     def schedule(self) -> tuple[list[int], list[float], list[float]]:
         """Return (bond_dims, noises, davidson thresholds) per sweep."""
@@ -595,6 +614,44 @@ class Block2DMRGSolver:
         self._activate()
         return self.driver.split_mps(multi_mps, int(iroot), tag)
 
+    def delete_mps_tag(self, tag: str) -> int:
+        """Remove every on-disk file for one MPS tag from ``store_dir``.
+
+        block2 writes each tag as ``{tag}-mps_info.bin``,
+        ``F.MPS.{tag}.{site}`` and ``F.MPS.INFO.{tag}.{LEFT,RIGHT}.{site}``
+        (empirically confirmed, see ``diagnostics/phase2_wavefunction_
+        hygiene/``). Matching is by exact dot-delimited component, not
+        substring/prefix, so deleting tag ``"CPHI_1"`` never touches
+        ``"CPHI_10"``, ``"CPHI_11"``, etc. Callers are responsible for never
+        passing the tag of an MPS still needed afterward (e.g. the
+        persistent reference ``ket``/``eta`` caches) -- this method has no
+        way to know which tags are still live.
+        """
+        info_name = f"{tag}-mps_info.bin"
+        removed = 0
+        with os.scandir(self.store_dir) as it:
+            for entry in it:
+                name = entry.name
+                if name == info_name:
+                    match = True
+                else:
+                    parts = name.split(".")
+                    match = (
+                        len(parts) == 4
+                        and parts[0] == "F" and parts[1] == "MPS" and parts[2] == tag
+                    ) or (
+                        len(parts) == 6
+                        and parts[0] == "F" and parts[1] == "MPS" and parts[2] == "INFO"
+                        and parts[3] == tag and parts[4] in ("LEFT", "RIGHT")
+                    )
+                if match:
+                    try:
+                        os.remove(entry.path)
+                        removed += 1
+                    except FileNotFoundError:
+                        pass
+        return removed
+
     # ------------------------------------------------------------------
     # MPOs
     # ------------------------------------------------------------------
@@ -838,14 +895,20 @@ class Block2DMRGSolver:
         for i, mpo in enumerate(
             self.rotated_parity_factor_mpos(parity_row, rotation)
         ):
+            previous = current
             current = self.apply_mpo(
                 mpo,
-                ket=current,
+                ket=previous,
                 tag=f"{tag}_f{i}",
                 bond_dim=bond_dim,
                 n_sweeps=n_sweeps,
                 tol=tol,
             )
+            if previous is not ket:
+                # An intermediate result from an earlier factor in this same
+                # chain (multi-orbital support rows only) -- never the
+                # caller's own ket, which this method does not own.
+                self.delete_mps_tag(previous.info.tag)
         return current
 
     def mps_overlap(self, bra, ket=None) -> complex:
@@ -858,6 +921,32 @@ class Block2DMRGSolver:
     def mps_norm2(self, ket) -> float:
         """``||ket||^2 = <ket|ket>``."""
         return float(np.real(self.mps_overlap(ket, ket)))
+
+    def transition_density_matrices(self, bra, ket) -> tuple[np.ndarray, np.ndarray]:
+        """Transition 1- and 2-particle density matrices ``<bra|...|ket>``
+        between two (possibly different) MPS, used by the analytic-gradient
+        machinery in ``src/dmrg_costs.py`` (Phase 2 item 3 of
+        ``diagnostics/REMEDIATION_PLAN.md``; see
+        ``diagnostics/phase2_analytic_gradient/``).
+
+        Returns ``(dm1, dm2)``: ``dm1[sigma, q, r] = <bra|c^dagger_{q,sigma}
+        c_{r,sigma}|ket>`` (``sigma`` in ``{alpha, beta}``, shape ``(2, norb,
+        norb)``); ``dm2`` is the spin-block 2-particle transition density,
+        shape ``(3, norb, norb, norb, norb)`` (block2's ``aa, ab, bb`` spin
+        order, empirically confirmed -- see
+        ``diagnostics/phase2_analytic_gradient/archive/tier1_convention_check.py``).
+
+        block2's own docs warn "there can be an overall phase uncertainty
+        for transition NPDMs" for ``bra != ket``; this was checked directly
+        (not assumed) via ``diagnostics/phase2_analytic_gradient/
+        derisking_microbenchmark.py`` and found linear to ~1e-12 relative
+        error on a real production-scale MPS pair, and again in
+        ``tier1_convention_check.py`` against exact dense arithmetic.
+        """
+        self._activate()
+        dm1 = np.asarray(self.driver.get_npdm(ket, pdm_type=1, bra=bra, iprint=0))
+        dm2 = np.asarray(self.driver.get_npdm(ket, pdm_type=2, bra=bra, iprint=0))
+        return dm1, dm2
 
     def _spin_parity_vectors(
         self, parity_matrix: np.ndarray
@@ -976,6 +1065,10 @@ class Block2DMRGSolver:
         self, mpo, config: DMRGConfig, tag: str, nroots: int = 1
     ) -> tuple[float | list[float], float]:
         self._activate()
+        if config.seed is not None:
+            import block2
+
+            block2.Random.rand_seed(config.seed)
         bond_dims, noises, thrds = config.schedule()
         ket = self.driver.get_random_mps(
             tag=tag, bond_dim=bond_dims[0], nroots=nroots
@@ -1025,6 +1118,7 @@ class Block2DMRGSolver:
         penalty: float = 10.0,
         config: DMRGConfig | None = None,
         verify_tol: float = 1e-2,
+        mps_tag: str | None = None,
     ) -> DMRGResult:
         """Sector-restricted ground state of the decoupled Hamiltonian.
 
@@ -1036,7 +1130,7 @@ class Block2DMRGSolver:
         sector within ``verify_tol`` (e.g. because the penalty was too weak).
         """
         sector_label = tuple(int(b) for b in sector_label)
-        tag = "SECTOR_" + "".join(map(str, sector_label))
+        tag = mps_tag or ("SECTOR_" + "".join(map(str, sector_label)))
         config = config or DMRGConfig(mps_tag=tag)
         if config.mps_tag != tag:
             config = DMRGConfig(**{**asdict(config), "mps_tag": tag})
@@ -1152,6 +1246,15 @@ class Block2DMRGSolver:
             self.expectation(self.electronic_hamiltonian_mpo(), ket=ket)
             + self.ecore
         )
+
+    def spin_resolved_rdms(self, ket=None) -> tuple[np.ndarray, np.ndarray]:
+        """Return Block2 conventional spin-resolved one- and two-particle RDMs."""
+        if ket is None:
+            ket = self.get_mps()
+        self._activate()
+        rdm1 = self.driver.get_conventional_1pdm(ket, iprint=0)
+        rdm2 = self.driver.get_conventional_2pdm(ket, iprint=0)
+        return np.asarray(rdm1), np.asarray(rdm2)
 
     def symmetry_expectations(
         self, parity_matrix: np.ndarray, ket=None
@@ -1321,27 +1424,46 @@ def solve_or_load_ground_state(
     config: DMRGConfig | None = None,
     reuse: bool = True,
 ) -> DMRGResult:
-    """Return the stored ground-state result if present, else solve and store."""
+    """Return the stored ground-state result if present, else solve and store.
+
+    Reuse is refused (falls through to a fresh solve) if a stored run exists
+    under ``config.mps_tag`` but was solved at a different ``max_bond_dim``
+    than requested. Without this check, a caller who re-runs at a higher
+    bond dimension after e.g. a Phase 3 reference-quality refusal -- the
+    natural "fix and retry" response -- would silently get back the old,
+    still-unconverged wavefunction and energy, since ``mps_tag`` defaults to
+    the fixed string ``"GS"`` regardless of bond dimension (found by
+    adversarial review of diagnostics/phase3_reference_quality_gate/: the
+    exact retry workflow the gate is supposed to invite was silently
+    defeated by this reuse path).
+    """
     config = config or DMRGConfig()
     if reuse and config.mps_tag in solver.stored_tags():
         run = solver.read_metadata(solver.store_dir)["runs"][config.mps_tag]
-        energy = float(
-            solver.energy_expectation(solver.get_mps(config.mps_tag))
-        )
+        stored_bond_dim = int(run["config"]["max_bond_dim"])
+        if stored_bond_dim == int(config.max_bond_dim):
+            energy = float(
+                solver.energy_expectation(solver.get_mps(config.mps_tag))
+            )
+            logger.info(
+                "reusing stored wavefunction %s (E = %.10f)",
+                solver.store_dir, energy,
+            )
+            stored_config = DMRGConfig(**{
+                key: tuple(value) if isinstance(value, list) else value
+                for key, value in run["config"].items()
+            })
+            return DMRGResult(
+                energy=energy,
+                mps_tag=config.mps_tag,
+                store_dir=str(solver.store_dir),
+                config=stored_config,
+                elapsed_seconds=float(run["elapsed_seconds"]),
+            )
         logger.info(
-            "reusing stored wavefunction %s (E = %.10f)",
-            solver.store_dir, energy,
-        )
-        stored_config = DMRGConfig(**{
-            key: tuple(value) if isinstance(value, list) else value
-            for key, value in run["config"].items()
-        })
-        return DMRGResult(
-            energy=energy,
-            mps_tag=config.mps_tag,
-            store_dir=str(solver.store_dir),
-            config=stored_config,
-            elapsed_seconds=float(run["elapsed_seconds"]),
+            "stored wavefunction %s tag=%s was solved at max_bond_dim=%d, "
+            "not the requested %d; re-solving instead of reusing",
+            solver.store_dir, config.mps_tag, stored_bond_dim, config.max_bond_dim,
         )
     return solver.run_ground_state(config)
 

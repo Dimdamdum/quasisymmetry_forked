@@ -300,11 +300,47 @@ class TestBlock2DMRGSolver(unittest.TestCase):
         energy = reloaded.energy_expectation(reloaded.get_mps("GS"))
         self.assertAlmostEqual(energy, self.result.energy, delta=1e-8)
 
-        result = solve_or_load_ground_state(reloaded)
+        # cls.result was solved at max_bond_dim=150 (see setUpClass); reuse
+        # requires the requested config's bond dim to match the stored run's,
+        # not just the tag (solve_or_load_ground_state refuses a tag-only
+        # match since Phase 3 adversarial review found it silently served a
+        # stale lower-bond-dim wavefunction after a caller retried at a
+        # higher bond dimension under the same tag/store).
+        result = solve_or_load_ground_state(
+            reloaded, config=DMRGConfig(max_bond_dim=150, n_sweeps=16)
+        )
         self.assertAlmostEqual(result.energy, self.result.energy, delta=1e-12)
 
         ci = reloaded.to_ci_vector(reloaded.get_mps("GS"))
         self.assertAlmostEqual(np.linalg.norm(ci), 1.0, places=8)
+
+    def test_persistence_reuse_refused_on_bond_dim_mismatch(self):
+        # Independent store (not the shared cls.solver.store_dir) so this
+        # doesn't mutate state other tests in this class depend on.
+        store = Path(tempfile.mkdtemp(prefix="dmrg_bd_mismatch_"))
+        try:
+            solver = Block2DMRGSolver.from_fcidump(FCIDUMP_PATH, store_dir=store)
+            first = solve_or_load_ground_state(
+                solver, config=DMRGConfig(max_bond_dim=150, n_sweeps=16)
+            )
+            self.assertEqual(first.config.max_bond_dim, 150)
+
+            # Same tag ("GS", the default), different bond dim: must re-solve,
+            # not silently return the bd=150 result.
+            second = solve_or_load_ground_state(
+                solver, config=DMRGConfig(max_bond_dim=250, n_sweeps=16)
+            )
+            self.assertEqual(second.config.max_bond_dim, 250)
+
+            # And requesting bd=150 again now correctly reuses the bd=250 run
+            # if asked with reuse=True and a matching config... but here the
+            # stored "GS" tag is now bd=250, so bd=150 must re-solve too.
+            third = solve_or_load_ground_state(
+                solver, config=DMRGConfig(max_bond_dim=150, n_sweeps=16)
+            )
+            self.assertEqual(third.config.max_bond_dim, 150)
+        finally:
+            shutil.rmtree(store, ignore_errors=True)
 
     def test_bipartite_entanglement_shape(self):
         entropies = self.solver.bipartite_entanglement()

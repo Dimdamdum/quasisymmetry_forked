@@ -26,12 +26,28 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
+
+if sys.platform == "darwin":
+    # On macOS, block2 links against Apple's Accelerate framework for BLAS/LAPACK,
+    # which is itself internally multithreaded. Combined with block2's own
+    # --n_threads OpenMP parallelism, that nests two thread pools and causes
+    # oversubscription. Capping Accelerate to 1 thread/call measured ~11% faster
+    # wall-clock in an isolated A/B test (bd=20, single DMRG solve + NC eval,
+    # M5 Pro, 2026-08-11); setdefault so an explicit override still wins.
+    os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+
+# scipy L-BFGS-B's ftol-triggered stop message: relative cost reduction fell
+# below ftol. Unlike a gtol stop (small gradient), this can fire after just a
+# handful of iterations on a noisy/biased cost (e.g. truncated DMRG), so it
+# is not accepted as real convergence below --min_converged_iter.
+FTOL_MESSAGE_PREFIX = "CONVERGENCE: RELATIVE REDUCTION OF F"
 
 
 def main() -> None:
@@ -49,13 +65,37 @@ def main() -> None:
     parser.add_argument("--n_threads", type=int, default=4)
     parser.add_argument("--multiply_bond_dim", type=int, default=None)
     parser.add_argument("--multiply_sweeps", type=int, default=8)
+    parser.add_argument(
+        "--dmrg_seed", type=int, default=None,
+        help="forwarded to optimize_symmetries.py --dmrg_seed (--reference dmrg "
+             "only): reseed block2's RNG before the reference DMRG solve for a "
+             "reproducible reference energy across attempts/reruns",
+    )
     parser.add_argument("--sector_backend", choices=("determinant", "clifford"), default="determinant")
     parser.add_argument("--symmetry_manifest", default=None)
     parser.add_argument("--fixed_sector", default=None)
     parser.add_argument("--sector_switch_maxiter", type=int, default=None)
     parser.add_argument("--attempt_maxiter", type=int, default=100)
     parser.add_argument("--max_attempts", type=int, default=20)
+    parser.add_argument(
+        "--min_converged_iter", type=int, default=10,
+        help="an attempt reporting converged=True via the ftol message "
+             "('CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH') with "
+             "fewer than this many L-BFGS-B iterations is treated as a "
+             "premature/noise-driven stop, not real convergence, and the "
+             "chain keeps going; gtol-triggered convergence is always "
+             "accepted regardless of iteration count",
+    )
     parser.add_argument("--initial_x0", default=None)
+    parser.add_argument("--ftol", type=float, default=None, help="forwarded to optimize_symmetries.py --ftol")
+    parser.add_argument("--gtol", type=float, default=None, help="forwarded to optimize_symmetries.py --gtol")
+    parser.add_argument("--eps", type=float, default=None, help="forwarded to optimize_symmetries.py --eps")
+    parser.add_argument(
+        "--finite_difference", action="store_true",
+        help="forwarded to optimize_symmetries.py --finite_difference (--reference "
+             "dmrg only): use L-BFGS-B's own finite-difference gradient instead of "
+             "the analytic gradient, which is the default",
+    )
     parser.add_argument("--python", default=sys.executable)
     args = parser.parse_args()
 
@@ -77,6 +117,7 @@ def main() -> None:
     while True:
         outname = outdir / f"{args.tag}_attempt{attempt}_result.json"
         output_fcidump = outdir / f"{args.tag}_attempt{attempt}_rotated_FCIDUMP"
+        orbene_npy = outdir / f"{args.tag}_attempt{attempt}_orbenes.npy"
         attempt_log_path = logs_dir / f"{args.tag}_attempt{attempt}.log"
 
         cmd = [args.python, "-u", "optimize_symmetries.py", args.molpath]
@@ -91,6 +132,7 @@ def main() -> None:
             "--optimizer_maxiter", str(args.attempt_maxiter),
             "--outname", str(outname),
             "--output_fcidump", str(output_fcidump),
+            "--orbene_npy", str(orbene_npy),
             "--verbose",
         ]
         if args.reference == "dmrg":
@@ -103,6 +145,10 @@ def main() -> None:
                 cmd += ["--wavefunction_dir", args.wavefunction_dir]
             if args.multiply_bond_dim is not None:
                 cmd += ["--multiply_bond_dim", str(args.multiply_bond_dim)]
+            if args.dmrg_seed is not None:
+                cmd += ["--dmrg_seed", str(args.dmrg_seed)]
+            if args.finite_difference:
+                cmd += ["--finite_difference"]
         else:
             if args.sector_backend != "determinant":
                 cmd += ["--sector_backend", args.sector_backend]
@@ -114,12 +160,18 @@ def main() -> None:
                 cmd += ["--sector_switch_maxiter", str(args.sector_switch_maxiter)]
         if x0_path:
             cmd += ["--x0", str(x0_path)]
+        if args.ftol is not None:
+            cmd += ["--ftol", str(args.ftol)]
+        if args.gtol is not None:
+            cmd += ["--gtol", str(args.gtol)]
+        if args.eps is not None:
+            cmd += ["--eps", str(args.eps)]
 
         x0_desc = x0_path if x0_path else "zeros"
         log(f"=== {args.tag}: attempt {attempt} (maxiter={args.attempt_maxiter}, x0={x0_desc}) ===", prefix=False)
 
-        with open(attempt_log_path, "w", encoding="utf-8") as attempt_log_fp, \
-             open(driver_log_path, "a", encoding="utf-8") as driver_log_fp:
+        with open(attempt_log_path, "w", encoding="utf-8", buffering=1) as attempt_log_fp, \
+             open(driver_log_path, "a", encoding="utf-8", buffering=1) as driver_log_fp:
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
             )
@@ -142,18 +194,48 @@ def main() -> None:
         nit = result["nit"]
         converged = result["converged"]
         message = result["message"]
+
+        premature = (
+            converged
+            and message.startswith(FTOL_MESSAGE_PREFIX)
+            and nit < args.min_converged_iter
+        )
+        # A premature ftol stop after nit<min_converged_iter iterations is
+        # normally treated as a noise-driven false convergence, not real
+        # convergence. But if this attempt was warm-started at (essentially)
+        # the cost the previous attempt ended at, and didn't move, it isn't
+        # noise -- it's L-BFGS-B correctly re-confirming an already-converged
+        # point. Rejecting that just burns another full attempt for an
+        # identical result (see diagnostics/phase5_end_to_end/FINDINGS.md,
+        # n2_1_50's chain).
+        resumed_at_prior_optimum = (
+            premature
+            and per_attempt
+            and abs(cost_before - per_attempt[-1]["cost_after"]) < 1e-10
+            and abs(cost_after - cost_before) < 1e-10
+        )
+        accepted_converged = converged and (not premature or resumed_at_prior_optimum)
+
         log(
             f"cost_before={cost_before:.6e}  cost_after={cost_after:.6e}  "
             f"nit={nit}  converged={converged}  message={message!r}"
+            + ("  [resumed at prior attempt's optimum; accepted despite nit<{}]".format(
+                   args.min_converged_iter)
+               if resumed_at_prior_optimum else
+               "  [premature ftol stop at nit<{}, not accepted as real "
+               "convergence; continuing chain]".format(args.min_converged_iter)
+               if premature else "")
         )
         per_attempt.append({
             "attempt": attempt,
             "outname": str(outname),
             "output_fcidump": str(output_fcidump),
+            "orbene_npy": str(orbene_npy),
             "cost_before": cost_before,
             "cost_after": cost_after,
             "nit": nit,
             "converged": converged,
+            "accepted_converged": accepted_converged,
             "message": message,
         })
 
@@ -161,19 +243,20 @@ def main() -> None:
         np.savetxt(x_opt_path, np.asarray(result["rotation"]))
         x0_path = str(x_opt_path)
 
-        if converged or attempt >= args.max_attempts:
+        if accepted_converged or attempt >= args.max_attempts:
             break
         attempt += 1
 
     total_nit = sum(a["nit"] for a in per_attempt)
     summary = {
         "tag": args.tag,
-        "converged": per_attempt[-1]["converged"],
+        "converged": per_attempt[-1]["accepted_converged"],
         "attempts": len(per_attempt),
         "cost_before": per_attempt[0]["cost_before"],
         "cost_after": per_attempt[-1]["cost_after"],
         "total_nit": total_nit,
         "fcidump": per_attempt[-1]["output_fcidump"],
+        "orbene_npy": per_attempt[-1]["orbene_npy"],
         "per_attempt": per_attempt,
     }
     log("", prefix=False)
