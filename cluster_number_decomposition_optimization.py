@@ -681,18 +681,15 @@ def expand_decomposition(
         for cluster_idx in chosen
     ]
 
-# checked till here - august 24
-
 # =============================================================================
-# Main beam search
+# Main beam search (human verified ✓)
 # =============================================================================
-
 
 def _initial_beam(
     rdm_data_ref: RDMData,
     cost_function_constructor: CostFunctionConstructor,
     num_decos: int,
-    initial_bases: list[np.ndarray] | None,
+    initial_bases: list[np.ndarray] | None, # list unitaries; in main workflow, built with _initial_bases and contains identity (for MOs) and/or unitary MOs -> NatOs
 ) -> list[Decomposition]:
     norb = rdm_data_ref.norb
     if initial_bases is None:
@@ -700,8 +697,8 @@ def _initial_beam(
 
     beam = []
     for i in range(num_decos):
-        U0 = np.asarray(initial_bases[i % len(initial_bases)])
-        partition0 = [list(range(norb))]
+        U0 = np.asarray(initial_bases[i % len(initial_bases)]) # use initial_bases equally often
+        partition0 = [list(range(norb))] # start with trivial coarsest partition
         cluster_matrix0 = partition_to_cluster_matrix(partition0, norb)
         rdm_data_0 = rotate_rdm_data(rdm_data_ref, U0)
         f0 = cost_function_constructor(rdm_data_0, cluster_matrix0)
@@ -730,7 +727,7 @@ def _log_search_stopped(
 
 def run_decomposition_optimizer(
     cost_function_constructor: CostFunctionConstructor,
-    rdm_data: RDMData,
+    rdm_data: RDMData, # of the initial (DMRG) GS; in ref basis (typically MOs)
     config: DecompositionOptimizerConfig | None = None,
     initial_bases: list[np.ndarray] | None = None,
 ) -> list[Decomposition]:
@@ -753,9 +750,10 @@ def run_decomposition_optimizer(
 
     beam = _initial_beam(rdm_data, cost_function_constructor, config.num_decos, initial_bases)
     for deco in beam:
-        validate_partition(deco.partition, norb)
+        validate_partition(deco.partition, norb) # currently redundant
 
-    trajectory = [min(beam, key=lambda d: d.cost)]
+    trajectory = [min(beam, key=lambda d: d.cost)] # here beam contains only trivial decos
+    # with same cost. The minimization therefore just picks one
     round_idx = 0
 
     while True:
@@ -790,7 +788,8 @@ def run_decomposition_optimizer(
 
         candidates.sort(key=lambda d: d.cost)
         beam = candidates[: config.num_decos]
-        trajectory.append(beam[0])
+        trajectory.append(beam[0]) # append to output trajectory the best decomposition
+        # beam[0] for the current number of clusters
 
         logger.info(
             "Round %d: %d candidates from %d decos -> kept %d, best cost=%.6e "
@@ -848,7 +847,7 @@ def best_decomposition(trajectory: list[Decomposition], num_clusters: int | None
 
 
 # =============================================================================
-# CLI Interface
+# CLI Interface (human verified ✓)
 # =============================================================================
 
 
