@@ -451,6 +451,101 @@ class TestBlockLocality:
             offdiag = block - np.diag(np.diag(block))
             assert np.max(np.abs(offdiag)) < 1e-8
 
+    def test_optimize_rotation_in_beam_search_false_keeps_U_at_parent(self, rdm_data):
+        partition = [[0, 1, 2], [3, 4, 5]]
+        U0 = np.eye(self.norb)
+        rdm_data_cur = rotate_rdm_data(rdm_data, U0)
+        n1, n2 = cluster_number_stats(rdm_data_cur, partition)
+        deco = Decomposition(partition=partition, U=U0, cost=0.0)
+        cost_fn = make_variance_cost_constructor()
+
+        child = _split_one_cluster(
+            deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+            naturalize_children=False, optimize_rotation_in_beam_search=False,
+        )
+        # No continuous rotation and no naturalization -- the child's U must be
+        # exactly the parent's U (only the discrete Fiedler split changed).
+        assert np.allclose(child.U, deco.U, atol=1e-12)
+
+    def test_optimize_rotation_in_beam_search_false_cost_matches_identity_evaluation(self, rdm_data):
+        partition = [[0, 1, 2], [3, 4, 5]]
+        U0 = np.eye(self.norb)
+        rdm_data_cur = rotate_rdm_data(rdm_data, U0)
+        n1, n2 = cluster_number_stats(rdm_data_cur, partition)
+        deco = Decomposition(partition=partition, U=U0, cost=0.0)
+        cost_fn = make_variance_cost_constructor()
+
+        V1, V2 = fiedler_bipartition(n1, n2, [0, 1, 2])
+        child_partition = [[3, 4, 5], V1, V2]
+        cluster_matrix = partition_to_cluster_matrix(child_partition, self.norb)
+        f = cost_fn(rdm_data_cur, cluster_matrix)
+        n_params = self.norb * (self.norb - 1) // 2
+        cost_at_identity = float(f(np.zeros(n_params)))
+
+        child = _split_one_cluster(
+            deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+            optimize_rotation_in_beam_search=False,
+        )
+        # No optimization ran at all, so the recorded cost must be exactly the
+        # identity-rotation cost, not merely <= it.
+        assert child.cost == pytest.approx(cost_at_identity, abs=1e-8)
+
+    def test_optimize_rotation_in_beam_search_keeps_U_orthogonal(self, rdm_data):
+        partition = [[0, 1, 2], [3, 4, 5]]
+        U0 = np.eye(self.norb)
+        rdm_data_cur = rotate_rdm_data(rdm_data, U0)
+        n1, n2 = cluster_number_stats(rdm_data_cur, partition)
+        deco = Decomposition(partition=partition, U=U0, cost=0.0)
+        cost_fn = make_variance_cost_constructor()
+
+        child = _split_one_cluster(
+            deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+            optimize_rotation_in_beam_search=False,
+        )
+        assert np.allclose(child.U @ child.U.T, np.eye(self.norb), atol=1e-8)
+
+    def test_optimize_rotation_in_beam_search_default_is_true(self, rdm_data):
+        partition = [[0, 1, 2], [3, 4, 5]]
+        U0 = np.eye(self.norb)
+        rdm_data_cur = rotate_rdm_data(rdm_data, U0)
+        n1, n2 = cluster_number_stats(rdm_data_cur, partition)
+        deco = Decomposition(partition=partition, U=U0, cost=0.0)
+        cost_fn = make_variance_cost_constructor()
+
+        # No optimize_rotation_in_beam_search kwarg passed -- must default to
+        # True, so its cost can only match or improve on the flag-off cost.
+        child_default = _split_one_cluster(
+            deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+        )
+        child_off = _split_one_cluster(
+            deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+            optimize_rotation_in_beam_search=False,
+        )
+        assert child_default.cost <= child_off.cost + 1e-8
+
+    def test_optimize_rotation_in_beam_search_independent_of_naturalize_children(self, rdm_data):
+        partition = [[0, 1, 2], [3, 4, 5]]
+        U0 = np.eye(self.norb)
+        rdm_data_cur = rotate_rdm_data(rdm_data, U0)
+        n1, n2 = cluster_number_stats(rdm_data_cur, partition)
+        deco = Decomposition(partition=partition, U=U0, cost=0.0)
+        cost_fn = make_variance_cost_constructor()
+
+        costs = {}
+        for opt_rot in (True, False):
+            for naturalize in (True, False):
+                child = _split_one_cluster(
+                    deco, rdm_data_cur, n1, n2, cluster_idx=0, cost_function_constructor=cost_fn, maxiter=50,
+                    optimize_rotation_in_beam_search=opt_rot, naturalize_children=naturalize,
+                )
+                validate_partition(child.partition, self.norb)
+                assert np.allclose(child.U @ child.U.T, np.eye(self.norb), atol=1e-8)
+                costs[(opt_rot, naturalize)] = child.cost
+
+        # naturalize_children must never change cost, regardless of this flag.
+        assert costs[(True, True)] == pytest.approx(costs[(True, False)], abs=1e-8)
+        assert costs[(False, True)] == pytest.approx(costs[(False, False)], abs=1e-8)
+
 
 # =============================================================================
 # Naturalize-children: local natural orbitals after each split
@@ -634,6 +729,33 @@ class TestRunDecompositionOptimizer:
         # and the single trajectory entry is a valid 1-cluster decomposition.
         assert len(trajectory) == 1
         assert trajectory[0].num_clusters == 1
+
+    def test_optimize_rotation_in_beam_search_false_end_to_end(self, rdm_data):
+        config = DecompositionOptimizerConfig(
+            num_decos=2, num_subdecos=2, maxiter=20,
+            optimize_rotation_in_beam_search=False, naturalize_children=False,
+        )
+        cost_fn = make_variance_cost_constructor()
+        trajectory = run_decomposition_optimizer(cost_fn, rdm_data, config)
+
+        assert trajectory[0].num_clusters == 1
+        assert trajectory[-1].num_clusters == self.norb
+        n_params = self.norb * (self.norb - 1) // 2
+        for i, deco in enumerate(trajectory):
+            assert deco.num_clusters == i + 1
+            validate_partition(deco.partition, self.norb)
+            assert np.allclose(deco.U @ deco.U.T, np.eye(self.norb), atol=1e-6)
+
+            # No optimization ran anywhere in this search, so every entry's
+            # stored cost must exactly match a fresh at-identity evaluation.
+            cluster_matrix = partition_to_cluster_matrix(deco.partition, self.norb)
+            rdm_data_deco = rotate_rdm_data(rdm_data, deco.U)
+            cost_reeval = float(cost_fn(rdm_data_deco, cluster_matrix)(np.zeros(n_params)))
+            assert deco.cost == pytest.approx(cost_reeval, abs=1e-6)
+
+            # With no continuous rotation and no naturalization anywhere, U
+            # never leaves the (default) identity initial basis.
+            assert np.allclose(deco.U, np.eye(self.norb), atol=1e-12)
 
 
 def test_polish_decomposition_does_not_increase_cost():
