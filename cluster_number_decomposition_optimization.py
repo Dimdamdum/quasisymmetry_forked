@@ -1079,8 +1079,14 @@ def _compute_sector_analysis_for_trajectory(
         SingleMaxelectransferResult,
         get_ordered_decoupled_states,
         get_ordered_state_projections_in_sectors,
+        get_sector_weight,
     )
-    from src.K_sectors_plots import get_K_sectors_values_energies, get_K_states_values_energies
+    from src.K_sectors_plots import (
+        get_K_sectors_values_energies,
+        get_K_states_values_energies,
+        get_main_sector_label_from_sector_projections,
+        get_main_sector_label_from_decoupled_states,
+    )
 
     mps = solver.get_mps()
     psi_MOs = solver.to_ci_vector(ket=mps)
@@ -1122,10 +1128,24 @@ def _compute_sector_analysis_for_trajectory(
         ordered_state_projections_in_sectors = None
         if not skip_K_sectors:
             ordered_state_projections_in_sectors = get_ordered_state_projections_in_sectors(sectors, h_linop, psi)
+            main_sector_label_sectors = get_main_sector_label_from_sector_projections(ordered_state_projections_in_sectors)
+            logger.info(f"{data_label}: label of main sector (K-sectors) = {main_sector_label_sectors}")
+            # full label (parity sub-label included) -- that's the actual sectors dict key,
+            # unlike main_sector_label_sectors above which discards it for particle-count arithmetic
+            main_sector_full_label_sectors = ordered_state_projections_in_sectors[0][0]
+            weight_main_sector_sectors = get_sector_weight(sectors, main_sector_full_label_sectors, psi)
+            logger.info(f"{data_label}: weight in main sector (K-sectors) = {round(weight_main_sector_sectors, 6)}")
 
         ordered_decoupled_states = None
         if not skip_K_states:
             ordered_decoupled_states = get_ordered_decoupled_states(sectors, h_linop, psi)
+            main_sector_label_states = get_main_sector_label_from_decoupled_states(ordered_decoupled_states)
+            logger.info(f"{data_label}: label of main sector (K-states) = {main_sector_label_states}")
+            # full label (parity sub-label included) -- that's the actual sectors dict key,
+            # unlike main_sector_label_states above which discards it for particle-count arithmetic
+            main_sector_full_label_states = ordered_decoupled_states[0][1]
+            weight_main_sector_states = get_sector_weight(sectors, main_sector_full_label_states, psi)
+            logger.info(f"{data_label}: weight in main sector (K-states) = {round(weight_main_sector_states, 6)}")
 
         transfer_results = []
         for max_elec in max_elec_transfers:
@@ -1139,7 +1159,7 @@ def _compute_sector_analysis_for_trajectory(
 
             if not skip_K_sectors:
                 (K_sectors_values, K_sectors_energies, K_sectors_retained_dimensions,
-                 chem_accuracy_reached_sectors) = get_K_sectors_values_energies(
+                 chem_accuracy_reached_sectors, _main_sector_label_sectors) = get_K_sectors_values_energies(
                     psi, h_linop, dmrg_energy, sectors, ordered_state_projections_in_sectors, max_elec, "projected",
                     max_K_sectors=max_K_sectors, verbose=0,
                 )
@@ -1154,7 +1174,8 @@ def _compute_sector_analysis_for_trajectory(
 
             if not skip_K_states:
                 (K_states_values, K_states_energies, K_states_num_retained_state_sectors,
-                 chem_accuracy_reached_states, _retained_sector_labels) = get_K_states_values_energies(
+                 chem_accuracy_reached_states, _retained_sector_labels,
+                 _main_sector_label_states) = get_K_states_values_energies(
                     psi, h_linop, dmrg_energy, ordered_decoupled_states, max_elec, "projected",
                     max_K_states=max_K_states, verbose=0,
                 )

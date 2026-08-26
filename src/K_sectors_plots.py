@@ -78,6 +78,18 @@ def energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_projections
     if projected_or_lowest == 'projected':
         return projected_energy_few_sectors(retained_sectors, psi, h_linop, ordered_state_projections_in_sectors)
 
+def get_main_sector_label_from_sector_projections(ordered_state_projections_in_sectors):
+    """Label (parity dummy discarded) of the most significant symmetry sector
+    for K-sectors mode -- the sector any max_elec_transfers sweep starts from."""
+    return ordered_state_projections_in_sectors[0][0][0]
+
+
+def get_main_sector_label_from_decoupled_states(ordered_decoupled_states):
+    """Label (parity dummy discarded) of the most significant symmetry sector
+    for K-states mode -- the sector any max_elec_transfers sweep starts from."""
+    return ordered_decoupled_states[0][1][0]
+
+
 def get_K_sectors_values_energies(psi, h_linop, ref_energy, sectors, ordered_state_projections_in_sectors, max_elec_transfers, projected_or_lowest, max_K_sectors=inf, verbose=0):
     assert np.isclose(ref_energy, np.vdot(psi, h_linop @ psi).real, atol=1e-10)
     assert np.isclose(0, np.vdot(psi, h_linop @ psi).imag, atol=1e-10)
@@ -89,9 +101,9 @@ def get_K_sectors_values_energies(psi, h_linop, ref_energy, sectors, ordered_sta
     chem_accuracy_reached = False
 
     # Get label of main sector
-    main_sector_label = ordered_state_projections_in_sectors[0][0][0] # here we do discard the parity dummy label
+    main_sector_label = get_main_sector_label_from_sector_projections(ordered_state_projections_in_sectors)
     if verbose > 0:
-        print(f"Label of main sector: {main_sector_label}\n")
+        print(f"Label of main sector: {main_sector_label}")
 
     # temp objects
     K_sectors = 0 # number of retained sectors
@@ -125,7 +137,7 @@ def get_K_sectors_values_energies(psi, h_linop, ref_energy, sectors, ordered_sta
         else:
             if verbose > 0:
                 print(f"--> Chemical accuracy not reached.")
-    return K_sectors_values, K_sectors_energies, K_sectors_retained_dimensions, chem_accuracy_reached
+    return K_sectors_values, K_sectors_energies, K_sectors_retained_dimensions, chem_accuracy_reached, main_sector_label
 
 def projected_energy_few_states(retained_states_indices, psi, h_linop, ordered_decoupled_states):
     """Compute energy using only the states with indices in retained_states_indices"""
@@ -169,9 +181,9 @@ def get_K_states_values_energies(psi, h_linop, ref_energy, ordered_decoupled_sta
     chem_accuracy_reached = False
     retained_sector_labels = set() # will contain labels (with discarded parity dummy entry) of the used sectors
 
-    main_sector_label = ordered_decoupled_states[0][1][0]  # here we do discard the parity dummy entry
+    main_sector_label = get_main_sector_label_from_decoupled_states(ordered_decoupled_states)
     if verbose > 0:
-        print(f"Label of main sector: {main_sector_label}\n")
+        print(f"Label of main sector: {main_sector_label}")
 
     K_states = 0 # number of retained sectors
     state_index = -1
@@ -207,7 +219,7 @@ def get_K_states_values_energies(psi, h_linop, ref_energy, ordered_decoupled_sta
             if verbose > 0:
                 print(f"--> Chemical accuracy not reached.")
 
-    return K_states_values, K_states_energies, K_states_num_retained_state_sectors, chem_accuracy_reached, retained_sector_labels
+    return K_states_values, K_states_energies, K_states_num_retained_state_sectors, chem_accuracy_reached, retained_sector_labels, main_sector_label
 
 # =============================================================================
 # Plotting functions - see below for version where data is read from .json

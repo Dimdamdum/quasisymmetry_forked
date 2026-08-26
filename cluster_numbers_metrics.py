@@ -109,6 +109,8 @@ from src.dmrg_solver import Block2DMRGSolver, DMRGConfig, solve_or_load_ground_s
 from src.K_sectors_plots import (
     get_K_sectors_values_energies,
     get_K_states_values_energies,
+    get_main_sector_label_from_sector_projections,
+    get_main_sector_label_from_decoupled_states,
     plot_dual_bar_chart,
     plot_energy_vs_K,
 )
@@ -748,6 +750,17 @@ def get_ordered_state_projections_in_sectors(sectors, h_linop, psi):
 
     return(ordered_state_projections_in_sectors)
 
+def get_sector_weight(sectors, sector_label, psi):
+    """||P|psi>||^2 for the projector P onto the given symmetry sector
+    (sectors[sector_label] gives that sector's full-Hilbert-space indices) --
+    same per-sector projection as get_ordered_state_projections_in_sectors,
+    usable independent of which analysis mode (K-sectors or K-states) is
+    active."""
+    sector_indices = sectors[sector_label]
+    projection = np.zeros(psi.shape, dtype='complex')
+    projection[sector_indices] = psi[sector_indices]
+    return float(np.linalg.norm(projection) ** 2)
+
 def get_ordered_decoupled_states(sectors, h_linop, psi):
     """
     Computes and ranks the full-space eigenstates of decoupled symmetry sectors 
@@ -907,16 +920,30 @@ def compute_sector_analysis(
             # --- preprocessing for A) SECTOR-BASED MODE - ordered sectors by decreasing ref. state projection (independent of max_elec!) ---
             logger.info(f"Ordering sectors by decreasing ref. state projection")
             ordered_state_projections_in_sectors = get_ordered_state_projections_in_sectors(sectors, h_linop, psi)
+            main_sector_label_sectors = get_main_sector_label_from_sector_projections(ordered_state_projections_in_sectors)
+            logger.info(f"Label of main sector (K-sectors): {main_sector_label_sectors}")
+            # full label (parity sub-label included) -- that's the actual sectors dict key,
+            # unlike main_sector_label_sectors above which discards it for particle-count arithmetic
+            main_sector_full_label_sectors = ordered_state_projections_in_sectors[0][0]
+            weight_main_sector_sectors = get_sector_weight(sectors, main_sector_full_label_sectors, psi)
+            logger.info(f"Weight in main sector (K-sectors): {round(weight_main_sector_sectors, 6)}")
             num_printed_sectors = min(10, len(ordered_state_projections_in_sectors))
             logger.info(f"A) K_sectors mode: finished ordering sectors by decreasing overlap with ref. (dmrg) state. The first {num_printed_sectors} sectors have the following label, squared norm of ref. state projection, and corresponding energy.")
             for i in range(num_printed_sectors):
                 label, value = ordered_state_projections_in_sectors[i]
-                logger.info(f"{i} --- label: {label} --- ||proj||^2: {value[1].round(6)} --- <proj|H|proj>/norm^2: {value[2].round(6)}")
+                logger.info(f"{i} --- label: {label} --- ||proj||^2: {round(value[1], 6)} --- <proj|H|proj>/norm^2: {round(value[2], 6)}")
 
         if not config.skip_K_states:
             # --- preprocessing for B) DECOUPLED STATE-BASED MODE - diagonalization of decoupled Hamiltonian with ordering by decreasing overlap (independent of max_elec!) ---
             logger.info(f"Diagonalization of decoupled Hamiltonian")
             ordered_decoupled_states = get_ordered_decoupled_states(sectors, h_linop, psi)
+            main_sector_label_states = get_main_sector_label_from_decoupled_states(ordered_decoupled_states)
+            logger.info(f"Label of main sector (K-states): {main_sector_label_states}")
+            # full label (parity sub-label included) -- that's the actual sectors dict key,
+            # unlike main_sector_label_states above which discards it for particle-count arithmetic
+            main_sector_full_label_states = ordered_decoupled_states[0][1]
+            weight_main_sector_states = get_sector_weight(sectors, main_sector_full_label_states, psi)
+            logger.info(f"Weight in main sector (K-states): {round(weight_main_sector_states, 6)}")
             num_printed_states = min(10, len(ordered_decoupled_states))
             logger.info(f"B) K_states mode: finished getting decoupled states. The first {num_printed_states} decoupled states have the following label and abs. overlap squared with the reference (dmrg) state")
             for i in range(num_printed_states):
@@ -943,7 +970,7 @@ def compute_sector_analysis(
             )
             if not config.skip_K_sectors:
                 # --- A) SECTOR-BASED MODE - Collect data (dependent on max_elec) ---
-                K_sectors_values, K_sectors_energies, K_sectors_retained_dimensions, chem_accuracy_reached_sectors = (
+                K_sectors_values, K_sectors_energies, K_sectors_retained_dimensions, chem_accuracy_reached_sectors, _main_sector_label = (
                     get_K_sectors_values_energies(
                         psi, 
                         h_linop, 
@@ -973,7 +1000,7 @@ def compute_sector_analysis(
             if not config.skip_K_states:
                 # --- B) DECOUPLED STATE-BASED MODE - Second part: prepare plot data ---
 
-                K_states_values, K_states_energies, K_states_num_retained_state_sectors, chem_accuracy_reached_states, retained_sector_labels = (
+                K_states_values, K_states_energies, K_states_num_retained_state_sectors, chem_accuracy_reached_states, retained_sector_labels, _main_sector_label = (
                                     get_K_states_values_energies(
                                         psi,
                                         h_linop,
