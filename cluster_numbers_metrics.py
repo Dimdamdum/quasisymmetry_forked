@@ -527,6 +527,10 @@ def extract_rdms(solver: Block2DMRGSolver, mps_tag: str, with_34_rdms=False) -> 
     logger.info(f"D shape: {D.shape}, trace: {np.trace(D).round(8)}")
     nons, evecs = np.linalg.eigh(D)
     logger.info(f"NONs: {nons}")
+    diag_sq = np.sum(np.diag(D)**2)
+    total_sq = np.sum(np.abs(D)**2) # basis-invariant
+    diagonality = diag_sq / total_sq
+    logger.info(f"Diagonality score of 1rdm: {diagonality}")
 
     rdm2_aa, rdm2_ab, rdm2_bb = solver.driver.get_2pdm(mps)
     Gamma = rdm2_aa + rdm2_bb + rdm2_ab + rdm2_ab.transpose(1, 0, 3, 2)
