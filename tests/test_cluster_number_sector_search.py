@@ -1135,6 +1135,48 @@ def _bf_two_electron_shapes(cluster_indices: list[int]) -> dict[str, tuple[list[
     return shapes
 
 
+def _bf_two_electron_shapes_with_doubled_cluster(
+    cluster_indices: list[int], doubled_cluster: int
+) -> dict[str, tuple[list[int], list[int]]]:
+    """The three "doubled-role" shapes (both_same, sources_same,
+    destinations_same -- all_different has no doubled role, so it is not
+    generated here) with the doubled role EXPLICITLY routed through
+    `doubled_cluster`, once as the doubled destination and once as the
+    doubled source, rather than left to fall wherever
+    _bf_two_electron_shapes' fixed cluster_indices[0]/[1]/[2] construction
+    happens to put it.
+
+    This matters specifically when `doubled_cluster` has >= 2 orbitals: a
+    singleton cluster holding 2 electrons has exactly one way to do it
+    (both spin-orbitals of its single orbital filled), so if a
+    multi-orbital cluster is never actually placed in the doubled role,
+    the RDM contractions that COULD involve two genuinely different
+    orbitals within the same cluster (as opposed to the same orbital,
+    different spin) never get exercised. Concretely, for both_same,
+    sources_same, destinations_same, this generates:
+
+        shape                        destinations         sources
+        ---------------------------  -------------------  -------------------
+        both_same_doubled_dest       [doubled, doubled]    [other0, other0]
+        both_same_doubled_src        [other0, other0]      [doubled, doubled]
+        sources_same_doubled         [other0, other1]       [doubled, doubled]
+        destinations_same_doubled    [doubled, doubled]     [other0, other1]
+
+    where other0, other1 are two cluster indices other than `doubled_cluster`
+    (destinations_same_doubled/sources_same_doubled need 2 of them; the
+    both_same variants need only 1).
+    """
+    others = [c for c in cluster_indices if c != doubled_cluster]
+    shapes: dict[str, tuple[list[int], list[int]]] = {}
+    if len(others) >= 1:
+        shapes["both_same_doubled_dest"] = ([doubled_cluster, doubled_cluster], [others[0], others[0]])
+        shapes["both_same_doubled_src"] = ([others[0], others[0]], [doubled_cluster, doubled_cluster])
+    if len(others) >= 2:
+        shapes["sources_same_doubled"] = ([others[0], others[1]], [doubled_cluster, doubled_cluster])
+        shapes["destinations_same_doubled"] = ([doubled_cluster, doubled_cluster], [others[0], others[1]])
+    return shapes
+
+
 # ---- scenario generation: (norb, partition) pairs, plus per-scenario cases ----
 #
 # norb=4 costs ~1s per sampled state's full RDM tensor set (D, Gamma, rdm3,
@@ -1168,6 +1210,22 @@ def _bf_generate_cases():
             N = _bf_valid_initial_N(cluster_sizes, destinations, sources)
             N_prime = _bf_apply_transfer(N, destinations, sources)
             cases.append((f"{scenario_name}__2e_{shape_name}", norb, partition, tuple(N), tuple(N_prime)))
+
+        # Two-electron cases, take 2: for every genuinely multi-orbital
+        # cluster (>= 2 orbitals) in this scenario, explicitly route the
+        # doubled role through it (both as doubled destination and as
+        # doubled source) via _bf_two_electron_shapes_with_doubled_cluster
+        # -- see that function's docstring for why this is not already
+        # covered by the block above (the generic shapes only exercise a
+        # multi-orbital cluster's doubled role by accident of which index
+        # it happens to have, never guaranteed, and never as a source).
+        multi_orbital_clusters = [k for k, cluster in enumerate(partition) if len(cluster) >= 2]
+        for doubled_cluster in multi_orbital_clusters:
+            extra_shapes = _bf_two_electron_shapes_with_doubled_cluster(cluster_indices, doubled_cluster)
+            for shape_name, (destinations, sources) in extra_shapes.items():
+                N = _bf_valid_initial_N(cluster_sizes, destinations, sources)
+                N_prime = _bf_apply_transfer(N, destinations, sources)
+                cases.append((f"{scenario_name}__2e_{shape_name}_c{doubled_cluster}", norb, partition, tuple(N), tuple(N_prime)))
 
         # One-electron cases: a couple of distinct (I, J) destination/source
         # pairs (reusing the same machinery with single-element lists).
