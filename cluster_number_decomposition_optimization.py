@@ -1067,6 +1067,7 @@ def _compute_sector_analysis_for_trajectory(
     max_K_states: int,
     skip_K_sectors: bool,
     skip_K_states: bool,
+    rdm_data: RDMData,
 ) -> list:
     """Returns a list[BasisResult] (cluster_numbers_metrics.py's own
     dataclass), one entry per (data_label, deco) in `entries`, each covering
@@ -1087,6 +1088,7 @@ def _compute_sector_analysis_for_trajectory(
         get_main_sector_label_from_sector_projections,
         get_main_sector_label_from_decoupled_states,
     )
+    from cluster_number_sector_search import main_sector_label
 
     mps = solver.get_mps()
     psi_MOs = solver.to_ci_vector(ket=mps)
@@ -1130,6 +1132,11 @@ def _compute_sector_analysis_for_trajectory(
             ordered_state_projections_in_sectors = get_ordered_state_projections_in_sectors(sectors, h_linop, psi)
             main_sector_label_sectors = get_main_sector_label_from_sector_projections(ordered_state_projections_in_sectors)
             logger.info(f"{data_label}: label of main sector (K-sectors) = {main_sector_label_sectors}")
+            n1 = np.diag(deco.U.conj() @ rdm_data.D @ deco.U.T)
+            idx = [np.asarray(c) for c in deco.partition]
+            mu = np.array([float(n1[c].sum()) for c in idx])
+            cluster_sizes = [len(clu) for clu in deco.partition]
+            logger.info(f"{data_label}: agrees with label obtained by rounding rdm block traces: {main_sector_label_sectors == main_sector_label(mu, nelec, cluster_sizes)}")
             # full label (parity sub-label included) -- that's the actual sectors dict key,
             # unlike main_sector_label_sectors above which discards it for particle-count arithmetic
             main_sector_full_label_sectors = ordered_state_projections_in_sectors[0][0]
@@ -1223,6 +1230,7 @@ def _run_sector_analysis(
     nelec: tuple[int, int],
     norb: int,
     computation_time: float,
+    rdm_data: RDMData,
 ) -> None:
     """For the selected "winner" decompositions, reruns
     cluster_numbers_metrics.py's own K-sectors/K-states sector analysis and
@@ -1244,6 +1252,7 @@ def _run_sector_analysis(
         max_K_states=args.max_K_states,
         skip_K_sectors=args.skip_K_sectors,
         skip_K_states=args.skip_K_states,
+        rdm_data=rdm_data,
     )
 
     metadata = {
@@ -1655,7 +1664,7 @@ def main() -> None:
         if not args.skip_sector_analysis:
             _run_sector_analysis(
                 args, trajectory, polished_trajectory, solver, dmrg_energy, h1e, g2e, ecore, nelec, norb,
-                computation_time,
+                computation_time, rdm_data
             )
 
     except Exception as e:
