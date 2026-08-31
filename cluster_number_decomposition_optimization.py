@@ -900,16 +900,31 @@ def _build_initial_bases(args: argparse.Namespace, rdm_data: RDMData, norb: int)
 
 
 def _run_dmrg_and_build_rdm_data(
-    args: argparse.Namespace,
+    args: argparse.Namespace, force_full_rdms: bool = False,
 ) -> tuple[RDMData, dict, Any, float, np.ndarray, np.ndarray, float, tuple[int, int]]:
     """Reuses cluster_numbers_metrics.py's DMRG + RDM-extraction pipeline to
     turn CLI molecule/basis/geometry arguments into an RDMData bundle, plus
     everything (solver, integrals) later needed to rerun the sector analysis.
-    Imported lazily so that using this module as a library (with RDMs already
-    in hand) doesn't pull in the DMRG solver / plotting stack.
+    Dispatches to _run_dmrg_and_build_rdm_data_from_fcidump when args.fcidump
+    is set, loading a precomputed Hamiltonian instead of building one from
+    --molecule/--basis-set/--bond-length. Imported lazily so that using this
+    module as a library (with RDMs already in hand) doesn't pull in the DMRG
+    solver / plotting stack.
+
+    force_full_rdms: extract rdm3/rdm4/h1e/g2e_full (needed for
+    cluster_number_sector_search.py's Tier 2 energy score) regardless of
+    args.cost_function -- otherwise only cost_function=="commutator" does,
+    since that's the only case the beam search's own cost function needs
+    them for. This is the sole reason this function -- otherwise purely a
+    beam-search concern -- knows about a sector-search-specific need; kept
+    here (rather than duplicated per caller) so every caller shares one
+    single DMRG-running code path per input source (molecule or FCIDUMP).
 
     Returns: rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec
     """
+    if args.fcidump is not None:
+        return _run_dmrg_and_build_rdm_data_from_fcidump(args, force_full_rdms=force_full_rdms)
+
     import pyscf.ao2mo
     from cluster_numbers_metrics import MetricsConfig, compute_dmrg, extract_rdms
 
@@ -930,7 +945,7 @@ def _run_dmrg_and_build_rdm_data(
     solver, dmrg_energy, h1e, g2e, ecore, nelec, result = compute_dmrg(metrics_config)
     norb = solver.n_sites
 
-    if args.cost_function == "commutator":
+    if args.cost_function == "commutator" or force_full_rdms:
         D, Gamma, rdm3, rdm4 = extract_rdms(solver, result.mps_tag, with_34_rdms=True)
         g2e_full = pyscf.ao2mo.restore(1, g2e, norb)
         rdm_data = RDMData(D=D, Gamma=Gamma, rdm3=rdm3, rdm4=rdm4, h1e=h1e, g2e_full=g2e_full)
@@ -943,21 +958,24 @@ def _run_dmrg_and_build_rdm_data(
 
 
 def _run_dmrg_and_build_rdm_data_from_fcidump(
-    args: argparse.Namespace,
+    args: argparse.Namespace, force_full_rdms: bool = False,
 ) -> tuple[RDMData, dict, Any, float, np.ndarray, np.ndarray, float, tuple[int, int]]:
-    """FCIDUMP counterpart of _run_dmrg_and_build_rdm_data: builds the DMRG
-    solver directly from a precomputed Hamiltonian (e.g. a CASSCF
-    active-space FCIDUMP written by another workflow) via
-    Block2DMRGSolver.from_fcidump, instead of building a molecule + HF
-    reference from --molecule/--basis-set/--bond-length -- the physics comes
-    entirely from the FCIDUMP. Of those three CLI arguments, --molecule and
-    --basis-set are then only used as free-form labels for the output/plots
-    directory tree (see _geometry_output_subpath) and metadata; --bond-length
-    is not used at all (still required positionally, but discarded -- see
-    _geometry_output_subpath and main()'s metadata construction). Unlike
-    compute_dmrg, this skips the DMRG-vs-HF variational sanity check: an
-    active-space FCIDUMP has no comparable whole-system HF energy to check
-    against.
+    """FCIDUMP counterpart of _run_dmrg_and_build_rdm_data, which dispatches
+    here directly when args.fcidump is set -- not meant to be called
+    directly by anything else. Builds the DMRG solver directly from a
+    precomputed Hamiltonian (e.g. a CASSCF active-space FCIDUMP written by
+    another workflow) via Block2DMRGSolver.from_fcidump, instead of building
+    a molecule + HF reference from --molecule/--basis-set/--bond-length --
+    the physics comes entirely from the FCIDUMP. Of those three CLI
+    arguments, --molecule and --basis-set are then only used as free-form
+    labels for the output/plots directory tree (see _geometry_output_subpath)
+    and metadata; --bond-length is not used at all (still required
+    positionally, but discarded -- see _geometry_output_subpath and main()'s
+    metadata construction). Unlike compute_dmrg, this skips the DMRG-vs-HF
+    variational sanity check: an active-space FCIDUMP has no comparable
+    whole-system HF energy to check against.
+
+    force_full_rdms: see _run_dmrg_and_build_rdm_data.
 
     Returns: rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec
     """
@@ -994,7 +1012,7 @@ def _run_dmrg_and_build_rdm_data_from_fcidump(
     g2e_full = restore_g2e(solver.g2e, norb)
     g2e = pyscf.ao2mo.restore(4, g2e_full, norb)  # match compute_dmrg's packed convention
 
-    if args.cost_function == "commutator":
+    if args.cost_function == "commutator" or force_full_rdms:
         D, Gamma, rdm3, rdm4 = extract_rdms(solver, result.mps_tag, with_34_rdms=True)
         rdm_data = RDMData(D=D, Gamma=Gamma, rdm3=rdm3, rdm4=rdm4, h1e=h1e, g2e_full=g2e_full)
     else:
@@ -1577,12 +1595,7 @@ def main() -> None:
     start_time = time.time()
 
     try:
-        if args.fcidump is not None:
-            rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec = (
-                _run_dmrg_and_build_rdm_data_from_fcidump(args)
-            )
-        else:
-            rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec = _run_dmrg_and_build_rdm_data(args)
+        rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec = _run_dmrg_and_build_rdm_data(args)
         norb = rdm_data.norb
 
         cost_function_constructor = _build_cost_function_constructor(args.cost_function, args.var_exponent)

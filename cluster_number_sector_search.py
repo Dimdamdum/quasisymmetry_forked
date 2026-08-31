@@ -60,6 +60,7 @@ own beam search via the same DMRG + cost-function + initial-basis + config
 pipeline, then runs the sector search on the resulting trajectory):
     python cluster_number_sector_search.py h2o sto-3g 2.0 commutator --bond-angle 104.5
     python cluster_number_sector_search.py h4_square 6-31g 1.0 variance --force-full-rdms --analyze-num-clusters 3
+    python cluster_number_sector_search.py h2o sto-3g 2.0 commutator --K-sector-analysis
 
 Library usage (bring your own Decomposition + RDMData, e.g. from
 cluster_number_decomposition_optimization.py's own trajectory):
@@ -698,6 +699,207 @@ def rank_relevant_sectors(
 
     return retained
 
+# =============================================================================
+# Sector analysis using rank_relevant_sectors output (for flag --K-sector-analysis) (human verified pending)
+# =============================================================================
+
+def get_relevance_ranked_K_sectors_values_energies(
+    psi: np.ndarray,
+    h_linop: Any,
+    ref_energy: float,
+    sectors: dict[tuple, list[int]],
+    ranked: list[SectorRelevance],
+    chemical_precision: float,
+) -> tuple[list[int], list[float], list[int], bool]:
+    """K-sweep for --K-sector-analysis: the relevance-ranked analogue of
+    src.K_sectors_plots.get_K_sectors_values_energies's psi-weight-ranked
+    K-sweep. Walks `ranked` in the order rank_relevant_sectors already put
+    it in -- no re-ranking, and no re-deriving a main-sector/electron-transfer
+    cap from scratch the way that sibling function does (rank_relevant_sectors's
+    own config already determined which and how many candidates are in
+    `ranked`).
+
+    At each K = 1, 2, ..., len(ranked): accumulate the K highest-score
+    sectors' determinant supports, project psi onto their direct sum,
+    renormalize to get psi', and record <psi'|H|psi'> and the cumulative
+    dimension sum(r.dimension for r in ranked[:K]). Sectors are disjoint by
+    construction, so a plain index assignment (not +=) into a running buffer
+    suffices, and ||psi'||^2 is non-decreasing in K.
+
+    Stops the first time energy - ref_energy < chemical_precision (same
+    non-abs comparison as get_K_sectors_values_energies), or once every
+    sector in `ranked` has been retained.
+
+    sectors: a number_and_parity_symmetry_sectors(...)-style dict keyed by
+    (label, ()) -- the parity part is always an empty tuple here, unlike
+    SectorRelevance.label, which is the bare label tuple alone.
+
+    Returns (K_values, energies, retained_dimensions, chem_accuracy_reached).
+    """
+    K_values: list[int] = []
+    energies: list[float] = []
+    retained_dimensions: list[int] = []
+    chem_accuracy_reached = False
+
+    compressed_coeffs = np.zeros_like(psi, dtype="complex")
+    cum_dim = 0
+    K = 0
+    for r in ranked:
+        indices = sectors.get((r.label, ()))
+        if indices is None:
+            logger.warning(
+                "get_relevance_ranked_K_sectors_values_energies: label %s from "
+                "rank_relevant_sectors not found among this decomposition's own symmetry "
+                "sectors -- skipping it (doesn't count towards K).",
+                r.label,
+            )
+            continue
+        K += 1  # K = number of sectors actually retained so far, not the loop position
+        compressed_coeffs[indices] = psi[indices]
+        cum_dim += r.dimension
+
+        norm = np.linalg.norm(compressed_coeffs)
+        if norm < 1e-15:
+            continue
+        psi_prime = compressed_coeffs / norm
+        # np.vdot(psi_prime, h_linop @ psi_prime) rather than the (mathematically
+        # equivalent) psi_prime.conj() @ h_linop @ psi_prime: the latter left-multiplies
+        # a LinearOperator, which needs rmatvec/__rmatmul__ support that isn't guaranteed
+        # -- h_linop @ psi_prime alone only ever needs the forward matvec every
+        # LinearOperator provides.
+        e_K = float(np.vdot(psi_prime, h_linop @ psi_prime).real)
+
+        K_values.append(K)
+        energies.append(e_K)
+        retained_dimensions.append(cum_dim)
+
+        if e_K - ref_energy < chemical_precision:
+            chem_accuracy_reached = True
+            break
+
+    return K_values, energies, retained_dimensions, chem_accuracy_reached
+
+
+@dataclass
+class KSectorAnalysisState:
+    """Accumulator threaded through main()'s trajectory loop for --K-sector-analysis."""
+
+    hamiltonian: Any
+    psi_MOs: np.ndarray
+    data_label_list: list[str]
+    K_values_list: list[list[int]]
+    energies_list: list[list[float]]
+    retained_dims_list: list[list[int]]
+
+
+def _setup_K_sector_analysis(solver: Any, h1e: np.ndarray, g2e: np.ndarray, ecore: float, norb: int) -> KSectorAnalysisState:
+    """One-time --K-sector-analysis setup, called once before main()'s trajectory
+    loop: extracts the full CI vector (in the MO basis) from the DMRG MPS and
+    builds the matrix-free Hamiltonian it will later be rotated into each
+    trajectory entry's own basis for (see _run_K_sector_analysis_for_entry)."""
+    import ffsim
+    import pyscf.ao2mo
+
+    mps = solver.get_mps()
+    psi_MOs = solver.to_ci_vector(ket=mps)
+    g2e_full = pyscf.ao2mo.restore(1, g2e, norb)
+    hamiltonian = ffsim.MolecularHamiltonian(one_body_tensor=h1e, two_body_tensor=g2e_full, constant=ecore)
+    return KSectorAnalysisState(
+        hamiltonian=hamiltonian, psi_MOs=psi_MOs,
+        data_label_list=[], K_values_list=[], energies_list=[], retained_dims_list=[],
+    )
+
+
+def _run_K_sector_analysis_for_entry(
+    state: KSectorAnalysisState,
+    deco: Decomposition,
+    ranked: list[SectorRelevance],
+    norb: int,
+    nelec: tuple[int, int],
+    dmrg_energy: float,
+) -> None:
+    """Per-trajectory-entry --K-sector-analysis step, called once per `deco` in
+    main()'s trajectory loop: runs the relevance-ranked K-sweep and appends its
+    curve into `state` (a no-op, beyond a warning, if `ranked` is empty)."""
+    if not ranked:
+        logger.warning(
+            f"{deco.num_clusters} clusters: rank_relevant_sectors retained no sectors -- "
+            "skipping its K-sector-analysis curve."
+        )
+        return
+
+    import ffsim
+    from chemistry import CHEMICAL_PRECISION
+    from src.cluster_number_operators import number_and_parity_symmetry_sectors
+
+    # deco.partition always already fully covers range(norb) with no overlaps (see
+    # validate_partition), so rank_relevant_sectors's own normalize_cluster_family
+    # never needed to add a ghost cluster for it -- sector labels built here from
+    # deco.partition directly therefore already match the label ordering `ranked`'s
+    # entries use.
+    cluster_matrix = partition_to_cluster_matrix(deco.partition, norb)
+    sectors = number_and_parity_symmetry_sectors(cluster_matrix, [], norb, nelec)
+    psi = ffsim.apply_orbital_rotation(state.psi_MOs, np.asarray(deco.U), norb, nelec)
+    h_rotated = state.hamiltonian.rotated(np.asarray(deco.U))
+    h_linop = ffsim.linear_operator(h_rotated, norb, nelec)
+    h_psi = h_linop @ psi
+    assert np.isclose(dmrg_energy, np.vdot(psi, h_psi).real, atol=1e-8)
+    assert np.isclose(0, np.vdot(psi, h_psi).imag, atol=1e-8)
+
+    K_values, energies, retained_dims, chem_accuracy_reached = (
+        get_relevance_ranked_K_sectors_values_energies(
+            psi, h_linop, dmrg_energy, sectors, ranked, CHEMICAL_PRECISION,
+        )
+    )
+    logger.info(
+        f"{deco.num_clusters} clusters: K-sector-analysis "
+        f"{'reached' if chem_accuracy_reached else 'did not reach'} chemical accuracy "
+        f"(stopped at K={K_values[-1] if K_values else 0})."
+    )
+    state.data_label_list.append(f"{deco.num_clusters} clusters")
+    state.K_values_list.append(K_values)
+    state.energies_list.append(energies)
+    state.retained_dims_list.append(retained_dims)
+
+
+def _finalize_K_sector_analysis(
+    state: KSectorAnalysisState,
+    args: argparse.Namespace,
+    dmrg_energy: float,
+    norb: int,
+    timestamp: str,
+    git_hash: str,
+) -> None:
+    """Saves the combined double plot for --K-sector-analysis, called once after
+    main()'s trajectory loop ends (a no-op, beyond a log message, if no entry
+    produced a curve)."""
+    if not state.data_label_list:
+        logger.info("No K-sector-analysis curves to plot.")
+        return
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from src.K_sectors_plots import plot_energy_vs_K
+
+    plots_dir = _plots_dir_for(args)
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    fig = plot_energy_vs_K(
+        state.data_label_list, state.K_values_list, state.energies_list, state.retained_dims_list,
+        dmrg_energy,
+        molecule=args.molecule, basis_set=args.basis_set, norb=norb,
+        cluster_sizes="varies per curve -- see data_label",
+        max_elec_transfers=args.max_elec_transfer, cost=args.cost_function,
+        sectors_or_states="sectors", from_beam_search=True,
+        min_child_cluster_size=args.min_child_cluster_size,
+        target_num_clusters=args.target_num_clusters,
+        initial_basis=args.initial_basis,
+    )
+    filename = f"K_sector_analysis_{args.cost_function}_{timestamp}_{git_hash}.png"
+    filepath = plots_dir / filename
+    fig.savefig(filepath, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"K-sector-analysis plot saved to {filepath}")
 
 # =============================================================================
 # CLI Interface (human verified pending)
@@ -775,9 +977,20 @@ def create_parser() -> argparse.ArgumentParser:
         "isn't 'commutator' -- otherwise Tier 2 is only available when it is, since that's the only "
         "case the beam search's own RDM extraction populates them.",
     )
+    parser.add_argument(
+        "--K-sector-analysis", action="store_true",
+        help="Produce one combined double plot (energy vs K, cumulative retained dimension vs K), "
+        "covering every selected trajectory entry, where K is the number of top-ranked sectors "
+        "retained per rank_relevant_sectors's own ranking (not psi-weight): at each K, the energy "
+        "is <psi'|H|psi'> for psi' = the normalized projection of the true wavefunction onto the "
+        "direct sum of the top-K sectors' determinant supports. A horizontal chemical-accuracy line "
+        "(from the DMRG energy) is drawn, and each entry's curve stops once it first crosses that "
+        "line. Off by default.",
+    )
 
     # Output options
     parser.add_argument("--output-dir", type=str, default=None, help="Output directory for results")
+    parser.add_argument("--plots-dir", type=str, default=None, help="Plots directory (for --K-sector-analysis)")
     parser.add_argument(
         "--wavefunction-dir", type=str, default="wavefunctions", help="MPS wavefunction directory (for input and output)"
     )
@@ -811,6 +1024,12 @@ def _output_dir_for(args: argparse.Namespace) -> Path:
     return Path("outputs_") / "cluster_number_sector_search" / _geometry_output_subpath(args)
 
 
+def _plots_dir_for(args: argparse.Namespace) -> Path:
+    if args.plots_dir is not None:
+        return Path(args.plots_dir)
+    return Path("plots") / "cluster_number_sector_search" / _geometry_output_subpath(args)
+
+
 def _sector_relevance_to_json(entries: list[SectorRelevance]) -> list[dict]:
     return [
         {
@@ -823,35 +1042,6 @@ def _sector_relevance_to_json(entries: list[SectorRelevance]) -> list[dict]:
         }
         for r in entries
     ]
-
-
-def _run_dmrg_and_build_rdm_data_full(
-    args: argparse.Namespace,
-) -> tuple[RDMData, dict, Any, float, np.ndarray, np.ndarray, float, tuple[int, int]]:
-    """Like cluster_number_decomposition_optimization._run_dmrg_and_build_rdm_data,
-    but always extracts h1e/g2e_full/rdm3/rdm4 (needed for Tier 2), regardless
-    of --cost-function -- that helper only does so when
-    cost_function=="commutator", since that's the only case its own beam
-    search needs them for. Used when --force-full-rdms is passed."""
-    import pyscf.ao2mo
-    from cluster_numbers_metrics import MetricsConfig, compute_dmrg, extract_rdms
-
-    metrics_config = MetricsConfig(
-        molecule=args.molecule, basis_set=args.basis_set, bond_length=args.bond_length,
-        type_cost_function=args.cost_function, bond_angle=args.bond_angle, bond_dim=args.bond_dim,
-        n_sweeps=args.n_sweeps, wavefunction_dir=args.wavefunction_dir, n_threads=args.n_threads,
-        reuse_wavefunction=not args.no_reuse,
-    )
-    logger.info("Running DMRG to get ground state MPS and integrals (forcing full RDMs for Tier 2)...")
-    solver, dmrg_energy, h1e, g2e, ecore, nelec, result = compute_dmrg(metrics_config)
-    norb = solver.n_sites
-
-    D, Gamma, rdm3, rdm4 = extract_rdms(solver, result.mps_tag, with_34_rdms=True)
-    g2e_full = pyscf.ao2mo.restore(1, g2e, norb)
-    rdm_data = RDMData(D=D, Gamma=Gamma, rdm3=rdm3, rdm4=rdm4, h1e=h1e, g2e_full=g2e_full)
-
-    dmrg_metadata = {"nelec": [int(x) for x in nelec], "dmrg_energy": float(dmrg_energy)}
-    return rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec
 
 
 def main() -> None:
@@ -877,12 +1067,9 @@ def main() -> None:
         exit(1)
 
     logger.info(f"Running beam search for {args.molecule}/{args.basis_set} to feed the sector search...")
-    if args.force_full_rdms:
-        rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec = (
-            _run_dmrg_and_build_rdm_data_full(args)
-        )
-    else:
-        rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec = _run_dmrg_and_build_rdm_data(args)
+    rdm_data, dmrg_metadata, solver, dmrg_energy, h1e, g2e, ecore, nelec = _run_dmrg_and_build_rdm_data(
+        args, force_full_rdms=args.force_full_rdms,
+    )
     norb = rdm_data.norb
 
     cost_function_constructor = _build_cost_function_constructor(args.cost_function, args.var_exponent)
@@ -897,6 +1084,10 @@ def main() -> None:
         optimize_rotation_in_beam_search=not args.no_orb_opt_in_beam_search,
     )
     trajectory = run_decomposition_optimizer(cost_function_constructor, rdm_data, opt_config, initial_bases)
+
+    if rdm_data.h1e is None:
+        # ensure rank_relevant_sectors's Tier-1 (h1e-only) energy_score is always available
+        rdm_data.h1e = h1e
 
     if args.analyze_num_clusters is not None:
         wanted = set(args.analyze_num_clusters)
@@ -922,6 +1113,9 @@ def main() -> None:
     timestamp = get_timestamp()
     git_hash = get_git_hash()
 
+    if args.K_sector_analysis:
+        K_sector_state = _setup_K_sector_analysis(solver, h1e, g2e, ecore, norb)
+
     for deco in entries:
         logger.info(f"Ranking sectors for {deco.num_clusters}-cluster decomposition (sizes={[len(c) for c in deco.partition]})...")
         ranked = rank_relevant_sectors(deco, rdm_data, nelec, search_config)
@@ -930,6 +1124,9 @@ def main() -> None:
                 f"  label={r.label} weight={r.weight_score:.4e} energy={r.energy_score} "
                 f"(tier {r.energy_tier}) t={r.elec_transfer} dim={r.dimension}"
             )
+
+        if args.K_sector_analysis:
+            _run_K_sector_analysis_for_entry(K_sector_state, deco, ranked, norb, nelec, dmrg_energy)
 
         metadata = {
             "molecule": args.molecule, "basis_set": args.basis_set,
@@ -949,6 +1146,9 @@ def main() -> None:
         with open(filepath, "w") as f:
             json.dump(output, f, indent=2)
         logger.info(f"Results saved to {filepath}")
+
+    if args.K_sector_analysis:
+        _finalize_K_sector_analysis(K_sector_state, args, dmrg_energy, norb, timestamp, git_hash)
 
     logger.info("Computation completed successfully!")
 
