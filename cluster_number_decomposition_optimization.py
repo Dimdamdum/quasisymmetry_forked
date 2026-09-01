@@ -78,7 +78,7 @@ Run with --help for the full list of options. Most physically meaningful ones ar
 --target-num-clusters (default: run down to singleton clusters)
 --initial-basis (default: both)
 --fiedler-reorder (on initial basis - default: False)
---max-transfers (default: 1 2 3)
+--max-transfers (default: 2)
 Main hyperparameters are probably
 --bond-dim (default: 150)
 --n-sweeps (default: 50)
@@ -1525,8 +1525,8 @@ def create_parser() -> argparse.ArgumentParser:
     # Sector analysis (K-sectors / K-states) for selected trajectory entries,
     # analogous to cluster_numbers_metrics.py's own sector analysis
     parser.add_argument(
-        "--max-transfers", type=int, nargs="+", default=[1, 2, 3],
-        help="Maximum electron transfers for the sector analysis (default: 1 2 3)",
+        "--max-transfers", type=int, nargs="+", default=[2],
+        help="Maximum electron transfers for the sector analysis (default: 2)",
     )
     parser.add_argument(
         "--analyze-num-clusters", type=int, nargs="+", default=None,
