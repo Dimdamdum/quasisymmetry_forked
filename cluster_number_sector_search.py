@@ -893,6 +893,20 @@ def _run_K_sector_analysis_for_entry(
     state.retained_dims_list.append(retained_dims)
 
 
+def _sector_energy_tier(rdm_data: RDMData) -> int:
+    """0/1/2 classification of the energy-scoring tier rank_relevant_sectors will
+    use for this rdm_data -- for the --K-sector-analysis plot filename (see
+    _finalize_K_sector_analysis): 0 = no h1e (every candidate falls back to
+    weight_score alone, no energy_score at all), 1 = h1e only (Tier-1 scoring),
+    2 = h1e+g2e_full+rdm3+rdm4 (Tier-2 scoring available). Mirrors
+    rank_relevant_sectors's own h1e-presence/have_tier2_source checks."""
+    if rdm_data.h1e is None:
+        return 0
+    if rdm_data.g2e_full is None or rdm_data.rdm3 is None or rdm_data.rdm4 is None:
+        return 1
+    return 2
+
+
 def _finalize_K_sector_analysis(
     state: KSectorAnalysisState,
     args: argparse.Namespace,
@@ -900,10 +914,13 @@ def _finalize_K_sector_analysis(
     norb: int,
     timestamp: str,
     git_hash: str,
+    sector_tier: int,
 ) -> None:
     """Saves the combined double plot for --K-sector-analysis, called once after
     main()'s trajectory loop ends (a no-op, beyond a log message, if no entry
-    produced a curve)."""
+    produced a curve). sector_tier (see _sector_energy_tier) is prefixed onto
+    the filename so plots from differently-scored runs (--force-h1e/
+    --force-full-rdms/plain) never collide."""
     if not state.data_label_list:
         logger.info("No K-sector-analysis curves to plot.")
         return
@@ -926,7 +943,7 @@ def _finalize_K_sector_analysis(
         target_num_clusters=args.target_num_clusters,
         initial_basis=args.initial_basis,
     )
-    filename = f"K_sector_analysis_{args.cost_function}_{timestamp}_{git_hash}.png"
+    filename = f"tier{sector_tier}_K_sector_analysis_{args.cost_function}_{timestamp}_{git_hash}.png"
     filepath = plots_dir / filename
     fig.savefig(filepath, dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -1143,6 +1160,7 @@ def main() -> None:
         # --force-h1e (rather than unconditional) so --cost-function != commutator with
         # neither --force-h1e nor --force-full-rdms gives pure weight_score-only ranking.
         rdm_data.h1e = h1e
+    sector_tier = _sector_energy_tier(rdm_data)
 
     if args.analyze_num_clusters is not None:
         wanted = set(args.analyze_num_clusters)
@@ -1203,7 +1221,7 @@ def main() -> None:
         logger.info(f"Results saved to {filepath}")
 
     if args.K_sector_analysis:
-        _finalize_K_sector_analysis(K_sector_state, args, dmrg_energy, norb, timestamp, git_hash)
+        _finalize_K_sector_analysis(K_sector_state, args, dmrg_energy, norb, timestamp, git_hash, sector_tier)
 
     logger.info("Computation completed successfully!")
 
