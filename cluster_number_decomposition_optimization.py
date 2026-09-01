@@ -76,7 +76,7 @@ Run with --help for the full list of options. Most physically meaningful ones ar
 --no-naturalize-children (default: False, i.e. naturalization ON)
 --no-orb-opt-in-beam-search (default: False, i.e. per-split rotation optimization ON)
 --target-num-clusters (default: run down to singleton clusters)
---initial-basis (default: MOs)
+--initial-basis (default: both)
 --fiedler-reorder (on initial basis - default: False)
 --max-transfers (default: 1 2 3)
 Main hyperparameters are probably
@@ -1505,8 +1505,8 @@ def create_parser() -> argparse.ArgumentParser:
 
     # Initial basis
     parser.add_argument(
-        "--initial-basis", type=str, choices=["MOs", "NatOs", "both"], default="MOs",
-        help="Reference basis (or bases) the beam is seeded from (default: MOs)",
+        "--initial-basis", type=str, choices=["MOs", "NatOs", "both"], default="both",
+        help="Reference basis (or bases) the beam is seeded from (default: both)",
     )
     parser.add_argument(
         "--fiedler-reorder", action="store_true",

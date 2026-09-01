@@ -987,7 +987,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-orb-opt-in-beam-search", action="store_true")
 
     # Initial basis
-    parser.add_argument("--initial-basis", type=str, choices=["MOs", "NatOs", "both"], default="MOs")
+    parser.add_argument("--initial-basis", type=str, choices=["MOs", "NatOs", "both"], default="both")
     parser.add_argument("--fiedler-reorder", action="store_true")
 
     # Polish
