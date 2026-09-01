@@ -634,8 +634,22 @@ def main() -> None:
     )
     norb = rdm_data.norb
 
+    # rotate_rdm_data (called on every beam-search split/round, and once per initial
+    # basis in _build_initial_bases's --fiedler-reorder path) rotates every populated
+    # field unconditionally, including rdm3/rdm4 (O(norb^6)/O(norb^8) tensor
+    # contractions) -- expensive, and completely wasted whenever the cost function
+    # doesn't read them (every cost function except "commutator"). rdm_data.rdm3/.rdm4/
+    # .h1e/.g2e_full are populated here purely for Part 1 (rank_relevant_sectors) and
+    # Part 2 (solve_decomposition_selected_sectors) below, both of which run once, after
+    # the beam search entirely -- so the beam search itself must only see them when it
+    # actually needs them (see the same fix in cluster_number_sector_search.py).
+    if args.cost_function == "commutator":
+        beam_rdm_data = rdm_data
+    else:
+        beam_rdm_data = RDMData(D=rdm_data.D, Gamma=rdm_data.Gamma)
+
     cost_function_constructor = _build_cost_function_constructor(args.cost_function, args.var_exponent)
-    initial_bases = _build_initial_bases(args, rdm_data, norb)
+    initial_bases = _build_initial_bases(args, beam_rdm_data, norb)
 
     opt_config = DecompositionOptimizerConfig(
         num_decos=args.num_decos, num_subdecos=args.num_subdecos,
@@ -645,7 +659,7 @@ def main() -> None:
         target_num_clusters=args.target_num_clusters, max_rounds=args.max_rounds, maxiter=args.maxiter,
         optimize_rotation_in_beam_search=not args.no_orb_opt_in_beam_search,
     )
-    trajectory = run_decomposition_optimizer(cost_function_constructor, rdm_data, opt_config, initial_bases)
+    trajectory = run_decomposition_optimizer(cost_function_constructor, beam_rdm_data, opt_config, initial_bases)
 
     if args.analyze_num_clusters is not None:
         wanted = set(args.analyze_num_clusters)
