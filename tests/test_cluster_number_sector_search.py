@@ -383,10 +383,15 @@ class TestMainSectorLabel:
 
 
 class TestGaussianWeight:
+    # gaussian_weight returns the raw log-weight (-1/2 * Mahalanobis-distance^2),
+    # not exp(...) of it -- see gaussian_weight's own docstring for why (exp()
+    # underflows to an uninformative exact 0.0 for essentially every non-main
+    # candidate in practice). Peak value is now 0.0 (attained at label==mu),
+    # not 1.0.
     def test_peaks_at_mu(self):
         mu = np.array([2.0, 1.0])
         sigma_pinv = np.linalg.pinv(np.array([[1.0, 0.3], [0.3, 1.0]]))
-        assert gaussian_weight((2, 1), mu, sigma_pinv) == pytest.approx(1.0, abs=1e-12)
+        assert gaussian_weight((2, 1), mu, sigma_pinv) == pytest.approx(0.0, abs=1e-12)
         assert gaussian_weight((3, 0), mu, sigma_pinv) < gaussian_weight((2, 1), mu, sigma_pinv)
 
     def test_handles_singular_sigma_via_pinv(self):
@@ -397,8 +402,27 @@ class TestGaussianWeight:
         w_null_dir = gaussian_weight((3, 2), mu, sigma_pinv)  # displacement (1,1): along the null direction
         w_other_dir = gaussian_weight((3, 0), mu, sigma_pinv)  # displacement (1,-1): orthogonal to it
         assert np.isfinite(w_null_dir) and np.isfinite(w_other_dir)
-        assert w_null_dir == pytest.approx(1.0, abs=1e-10)  # unpenalized along the null direction
+        assert w_null_dir == pytest.approx(0.0, abs=1e-10)  # unpenalized along the null direction
         assert w_other_dir < w_null_dir
+
+    def test_underflow_case_no_longer_collapses_to_a_single_value(self):
+        # Regression test for the actual bug: a well-converged state's tiny
+        # cluster-number variance used to make exp(...) underflow to 0.0 for
+        # every candidate beyond the main label, making them indistinguishable.
+        # Reproduce that regime directly (tiny variance -> huge Sigma^+
+        # eigenvalues) and confirm distinct integer displacements still give
+        # distinct, ordered scores.
+        mu = np.array([2.0, 2.0])
+        Sigma = np.array([[1.3e-4, -1.3e-4], [-1.3e-4, 1.3e-4]])
+        sigma_pinv = np.linalg.pinv(Sigma)
+        w0 = gaussian_weight((2, 2), mu, sigma_pinv)  # t=0
+        w1 = gaussian_weight((1, 3), mu, sigma_pinv)  # t=1
+        w2 = gaussian_weight((0, 4), mu, sigma_pinv)  # t=2
+        # In the old exp() version these would all have been exactly 0.0
+        # (confirmed: raw exponents here are on the order of -3.7e3/-1.5e4,
+        # far below float64's underflow floor of about -745) except w0.
+        assert w0 > w1 > w2
+        assert all(np.isfinite(w) for w in (w0, w1, w2))
 
 
 # =============================================================================

@@ -28,10 +28,11 @@ Algorithm (see rank_relevant_sectors for the orchestration):
   A. cluster_number_moments: mean vector and full K x K covariance matrix
      of the cluster number operators, from the 1-/2-RDM alone.
   B. main_sector_label / gaussian_weight: a cheap, closed-form estimate of
-     the main sector holding most of the state's weight, and how much weight
-     neighbouring sectors plausibly hold, via a multivariate-Gaussian
-     model of the joint cluster-count distribution (maximum-entropy, given
-     only the first two RDM-derived moments).
+     the main sector holding most of the state's weight, and a log-weight
+     ranking signal (deliberately not exponentiated -- see gaussian_weight's
+     own docstring) for how plausible neighbouring sectors are, via a
+     multivariate-Gaussian model of the joint cluster-count distribution
+     (maximum-entropy, given only the first two RDM-derived moments).
   C. enumerate_candidate_labels: which OTHER sectors are even worth
      considering -- a bounded graph search (BFS over elementary
      single-electron cluster-to-cluster moves), not an exhaustive sweep
@@ -54,6 +55,20 @@ Algorithm (see rank_relevant_sectors for the orchestration):
   F. rank_relevant_sectors: ties 0-E together into a single ranked,
      greedily-truncated (num_sectors_to_retain / max_cum_dim_to_retain)
      list of SectorRelevance entries.
+
+! IMPORTANT: both leading-order perturbation theory and
+cluster_number_decomposition_optimization.py simulations show that sectors
+that are related to the main sector by t >= 3 electron moves can be ignored.
+Plus, heuristically, the variances of the cluster numbers get minimized,
+which also favors small t values over large ones. In this light, the
+gaussian weight's practical role is limited -- it's the sole ranking key
+only for t >= 3 candidates (or when h1e is unavailable, so no candidate
+gets an energy_score at all). It was also, until fixed, not even
+functioning correctly in that limited role: gaussian_weight used to return
+exp(...) of a quantity that routinely underflows to an exact 0.0 in
+float64 for every non-main-label candidate, making that limited ranking
+role effectively random rather than merely unimportant -- see
+gaussian_weight's own docstring for the fix.
 
 CLI usage (mirrors cluster_number_decomposition_optimization.py: runs its
 own beam search via the same DMRG + cost-function + initial-basis + config
@@ -111,7 +126,9 @@ class SectorRelevance:
     """One ranked candidate sector."""
 
     label: tuple[int, ...]  # (N_0, ..., N_{K-1}), K = len(deco.partition) (ghost cluster, if any, stripped)
-    weight_score: float  # Gaussian/max-entropy estimate of the state's weight in this sector
+    weight_score: float  # Gaussian/max-entropy LOG-weight estimate (unnormalized, not
+    # exponentiated -- see gaussian_weight's docstring for why) of the state's relative
+    # likelihood in this sector; a ranking signal, not a probability or a bounded quantity
     energy_score: float | None  # q(delta): RDM-computable coupling strength to the main sector; None if not scored
     energy_tier: int | None  # 1 (h1e only) or 2 (+g2e/rdm3/rdm4); None if energy_score is None
     elec_transfer: int  # t = (1/2) * sum(|label - main_label|)
@@ -289,16 +306,37 @@ def main_sector_label(
 
 
 def gaussian_weight(label: tuple[int, ...], mu: np.ndarray, sigma_pinv: np.ndarray) -> float:
-    """exp(-1/2 (label-mu)^T Sigma^+ (label-mu)) -- unnormalized max-entropy/
-    multivariate-Gaussian weight estimate (see module docstring): relative
-    ranking signal only, not a calibrated probability. sigma_pinv should be
-    precomputed once per decomposition via np.linalg.pinv(Sigma) and reused
-    across every candidate -- Sigma's null direction (all-ones) is exactly
-    the direction pinv correctly treats as forbidden, and every label/mu we
-    evaluate this on already lies in the sum(N_K)=Nalpha+Nbeta hyperplane."""
+    """-1/2 (label-mu)^T Sigma^+ (label-mu) -- unnormalized max-entropy/
+    multivariate-Gaussian LOG-weight estimate (see module docstring):
+    relative ranking signal only, not a calibrated probability (or even a
+    calibrated log-probability -- the normalizing constant is dropped).
+    Peaks at 0 when label==mu; strictly decreases (more negative) as label
+    moves away from mu, so "higher is more relevant" still holds and
+    rank_relevant_sectors's existing descending sort needs no change.
+
+    Deliberately NOT exponentiated. An earlier version returned
+    exp(this value) instead, but that exponent routinely runs to -1e3 to
+    -1e4 for even a single-electron displacement away from a well-converged
+    DMRG state's mean occupations (Sigma's variances shrink as the state
+    concentrates on one sector, which pushes Sigma^+'s eigenvalues -- and
+    hence this quadratic form -- up correspondingly), which underflows
+    exp() to an exact 0.0 in float64 (true of any exponent below about
+    -745) for essentially every candidate but the main label itself. Since
+    this score is the SOLE ranking key whenever energy_score is unavailable
+    (t>=3 candidates, or any run without h1e -- see the module-level
+    "IMPORTANT" note above), that silently made those candidates' relative
+    order arbitrary (Python's stable sort just falls back to
+    enumerate_candidate_labels's BFS discovery order among exact ties)
+    rather than reflecting genuine closeness to mu. The raw log-weight has
+    no such underflow risk over the whole practical range.
+
+    sigma_pinv should be precomputed once per decomposition via
+    np.linalg.pinv(Sigma) and reused across every candidate -- Sigma's null
+    direction (all-ones) is exactly the direction pinv correctly treats as
+    forbidden, and every label/mu we evaluate this on already lies in the
+    sum(N_K)=Nalpha+Nbeta hyperplane."""
     diff = np.asarray(label, dtype=float) - mu
-    exponent = -0.5 * float(diff @ sigma_pinv @ diff)
-    return float(np.exp(exponent))
+    return -0.5 * float(diff @ sigma_pinv @ diff)
 
 
 # =============================================================================
@@ -972,6 +1010,14 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-cum-dim-to-retain", type=int, default=None)
     parser.add_argument("--max-elec-transfer", type=int, default=2)
     parser.add_argument(
+        "--force-h1e", action="store_true",
+        help="Backfill h1e (needed for Tier 1) into rdm_data even if --cost-function isn't "
+        "'commutator' and --force-full-rdms isn't passed -- h1e itself is always cheaply available "
+        "from the beam search's own DMRG run regardless, so this costs nothing extra. Without "
+        "either this or --force-full-rdms, ranking falls back to weight_score alone for every "
+        "candidate (no energy_score at all). Implied by --force-full-rdms; only meaningful on its own.",
+    )
+    parser.add_argument(
         "--force-full-rdms", action="store_true",
         help="Extract h1e/g2e_full/rdm3/rdm4 (needed for Tier 2) directly, even if --cost-function "
         "isn't 'commutator' -- otherwise Tier 2 is only available when it is, since that's the only "
@@ -1085,8 +1131,11 @@ def main() -> None:
     )
     trajectory = run_decomposition_optimizer(cost_function_constructor, rdm_data, opt_config, initial_bases)
 
-    if rdm_data.h1e is None:
-        # ensure rank_relevant_sectors's Tier-1 (h1e-only) energy_score is always available
+    if args.force_h1e and rdm_data.h1e is None:
+        # backfill h1e (cheap -- already computed regardless of RDM extraction level) so
+        # rank_relevant_sectors's Tier-1 (h1e-only) energy_score is available; gated on
+        # --force-h1e (rather than unconditional) so --cost-function != commutator with
+        # neither --force-h1e nor --force-full-rdms gives pure weight_score-only ranking.
         rdm_data.h1e = h1e
 
     if args.analyze_num_clusters is not None:
@@ -1121,7 +1170,7 @@ def main() -> None:
         ranked = rank_relevant_sectors(deco, rdm_data, nelec, search_config)
         for r in ranked[:10]:
             logger.info(
-                f"  label={r.label} weight={r.weight_score:.4e} energy={r.energy_score} "
+                f"  label={r.label} logw={r.weight_score:.4e} energy={r.energy_score} "
                 f"(tier {r.energy_tier}) t={r.elec_transfer} dim={r.dimension}"
             )
 

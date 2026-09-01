@@ -543,8 +543,8 @@ def create_parser() -> argparse.ArgumentParser:
 
     group = parser.add_argument_group(
         "selected-sector Lanczos (Part 2)",
-        description="Note: --force-full-rdms (above) is a no-op in this script -- "
-        "full RDMs/integrals are always extracted regardless of that flag, since "
+        description="Note: --force-h1e and --force-full-rdms (above) are both no-ops in this "
+        "script -- full RDMs/integrals are always extracted regardless of either flag, since "
         "the Lanczos solve below needs h1e/g2e_full no matter what.",
     )
     group.add_argument(
@@ -702,7 +702,7 @@ def main() -> None:
         ranked = rank_relevant_sectors(deco, rdm_data, nelec, search_config)
         for r in ranked[:10]:
             logger.info(
-                f"  label={r.label} weight={r.weight_score:.4e} energy={r.energy_score} "
+                f"  label={r.label} logw={r.weight_score:.4e} energy={r.energy_score} "
                 f"(tier {r.energy_tier}) t={r.elec_transfer} dim={r.dimension}"
             )
 
