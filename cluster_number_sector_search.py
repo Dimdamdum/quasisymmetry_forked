@@ -59,16 +59,9 @@ Algorithm (see rank_relevant_sectors for the orchestration):
 ! IMPORTANT: both leading-order perturbation theory and
 cluster_number_decomposition_optimization.py simulations show that sectors
 that are related to the main sector by t >= 3 electron moves can be ignored.
-Plus, heuristically, the variances of the cluster numbers get minimized,
-which also favors small t values over large ones. In this light, the
-gaussian weight's practical role is limited -- it's the sole ranking key
-only for t >= 3 candidates (or when h1e is unavailable, so no candidate
-gets an energy_score at all). It was also, until fixed, not even
-functioning correctly in that limited role: gaussian_weight used to return
-exp(...) of a quantity that routinely underflows to an exact 0.0 in
-float64 for every non-main-label candidate, making that limited ranking
-role effectively random rather than merely unimportant -- see
-gaussian_weight's own docstring for the fix.
+Also, between the cheap tier-0-only and the expensive all-tier options, it is
+not yet clear who wins (could depend on the system) in simulations.
+The cheap tier-0,1 seems worse than tier-0-only and is provably worse than all-tier.
 
 CLI usage (mirrors cluster_number_decomposition_optimization.py: runs its
 own beam search via the same DMRG + cost-function + initial-basis + config
