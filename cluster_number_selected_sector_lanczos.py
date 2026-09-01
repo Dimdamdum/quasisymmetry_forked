@@ -545,7 +545,8 @@ def create_parser() -> argparse.ArgumentParser:
         "selected-sector Lanczos (Part 2)",
         description="Note: --force-h1e and --force-full-rdms (above) are both no-ops in this "
         "script -- full RDMs/integrals are always extracted regardless of either flag, since "
-        "the Lanczos solve below needs h1e/g2e_full no matter what.",
+        "the Lanczos solve below needs h1e/g2e_full no matter what. Use --max-sector-tier to "
+        "control Part 1's own ranking tier independently of that.",
     )
     group.add_argument(
         "--analyze-num-clusters-lanczos", type=int, nargs="+", default=None,
@@ -554,6 +555,15 @@ def create_parser() -> argparse.ArgumentParser:
         "more expensive than the sector ranking above, so it deliberately does not "
         "default to 'all entries' the way --analyze-num-clusters does). Must be a "
         "subset of whatever --analyze-num-clusters selected.",
+    )
+    group.add_argument(
+        "--max-sector-tier", type=int, choices=[0, 1, 2], default=None,
+        help="Cap Part 1's sector-ranking energy-score tier below the full Tier-2 data always "
+        "extracted above for Part 2 -- Part 2's Lanczos solve is unaffected by this flag, it "
+        "always gets the full, uncapped data. Default: None, i.e. the ranking also uses the "
+        "full Tier-2 data. 0 disables energy scoring for the ranking entirely (weight_score-only, "
+        "i.e. Tier 0); 1 caps it at Tier 1 (h1e only). Useful since Tier 0 sometimes outranks "
+        "Tier 2 despite being cheaper (see cluster_number_sector_search.py's module docstring).",
     )
     group.add_argument("--krylov-seed-depth", type=int, default=4)
     group.add_argument("--max-iterations", type=int, default=5)
@@ -644,7 +654,7 @@ def main() -> None:
     # the beam search entirely -- so the beam search itself must only see them when it
     # actually needs them (see the same fix in cluster_number_sector_search.py).
     if args.cost_function == "commutator":
-        beam_rdm_data = rdm_data
+        beam_rdm_data = rdm_data # doesn't allocate: just binds a new name to the same object
     else:
         beam_rdm_data = RDMData(D=rdm_data.D, Gamma=rdm_data.Gamma)
 
@@ -692,6 +702,19 @@ def main() -> None:
         max_cum_dim_to_retain=args.max_cum_dim_to_retain,
         max_elec_transfer=args.max_elec_transfer,
     )
+
+    # rank_relevant_sectors derives its own energy-score tier purely from what's
+    # populated on whatever RDMData it's handed -- so --max-sector-tier is implemented
+    # by simply stripping fields off a copy, the same trick beam_rdm_data above uses.
+    # solve_decomposition_selected_sectors (Part 2) always gets the untouched, full
+    # rdm_data regardless -- it needs h1e/g2e_full no matter what --max-sector-tier says.
+    if args.max_sector_tier is None or args.max_sector_tier >= 2:
+        ranking_rdm_data = rdm_data
+    elif args.max_sector_tier == 1:
+        ranking_rdm_data = RDMData(D=rdm_data.D, Gamma=rdm_data.Gamma, h1e=rdm_data.h1e)
+    else:
+        ranking_rdm_data = RDMData(D=rdm_data.D, Gamma=rdm_data.Gamma)
+
     lanczos_config = LanczosSearchConfig(
         krylov_seed_depth=args.krylov_seed_depth,
         max_iterations=args.max_iterations,
@@ -713,7 +736,7 @@ def main() -> None:
             f"Ranking sectors for {deco.num_clusters}-cluster decomposition "
             f"(sizes={[len(c) for c in deco.partition]})..."
         )
-        ranked = rank_relevant_sectors(deco, rdm_data, nelec, search_config)
+        ranked = rank_relevant_sectors(deco, ranking_rdm_data, nelec, search_config)
         for r in ranked[:10]:
             logger.info(
                 f"  label={r.label} logw={r.weight_score:.4e} energy={r.energy_score} "
@@ -731,6 +754,7 @@ def main() -> None:
             "max_elec_transfer": args.max_elec_transfer,
             "num_sectors_to_retain": args.num_sectors_to_retain,
             "max_cum_dim_to_retain": args.max_cum_dim_to_retain,
+            "max_sector_tier": args.max_sector_tier,
         }
         part1_output = {"metadata": metadata, "ranked_sectors": _sector_relevance_to_json(ranked)}
         part1_filename = f"sectors_{deco.num_clusters}clusters_{args.cost_function}_{timestamp}_{git_hash}.json"

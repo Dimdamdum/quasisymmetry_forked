@@ -1021,17 +1021,14 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-elec-transfer", type=int, default=2)
     parser.add_argument(
         "--force-h1e", action="store_true",
-        help="Backfill h1e (needed for Tier 1) into rdm_data even if --cost-function isn't "
-        "'commutator' and --force-full-rdms isn't passed -- h1e itself is always cheaply available "
-        "from the beam search's own DMRG run regardless, so this costs nothing extra. Without "
-        "either this or --force-full-rdms, ranking falls back to weight_score alone for every "
+        help="Backfill h1e into rdm_data and use Tier 1 score even if"
+        "--cost-function isn't 'commutator' and --force-full-rdms isn't passed. Without"
+        "either this or --force-full-rdms, ranking falls back to weight_score alone (Tier 0) for every "
         "candidate (no energy_score at all). Implied by --force-full-rdms; only meaningful on its own.",
     )
     parser.add_argument(
         "--force-full-rdms", action="store_true",
-        help="Extract h1e/g2e_full/rdm3/rdm4 (needed for Tier 2) directly, even if --cost-function "
-        "isn't 'commutator' -- otherwise Tier 2 is only available when it is, since that's the only "
-        "case the beam search's own RDM extraction populates them.",
+        help="Extract h1e/g2e_full/rdm3/rdm4 and use Tier 2 score, even if --cost-function isn't 'commutator'",
     )
     parser.add_argument(
         "--K-sector-analysis", action="store_true",
