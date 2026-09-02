@@ -1,0 +1,3 @@
+Plots in this dir were created using cluster_number_sector_search.py, which produces sectors and rank them using a cheap and scalable approach.
+
+They should be compared with the similar plots in plots/cluster_number_examples/partition_and_basis_simultaneous_optimization, created with cluster_number_decomposition_optimization.py, which produces sectors in the exact same way, but ranks them using an expensive, full-vector approach.
