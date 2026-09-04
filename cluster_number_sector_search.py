@@ -734,6 +734,15 @@ def rank_relevant_sectors(
 # Sector analysis using rank_relevant_sectors output (for flag --K-sector-analysis) (human verified pending)
 # =============================================================================
 
+
+def full_hilbert_space_dimension(norb: int, nelec: tuple[int, int]) -> int:
+    """comb(norb, Nalpha) * comb(norb, Nbeta): the size of the full, undecomposed
+    Hilbert space at fixed (Nalpha, Nbeta) -- the denominator for "what fraction of
+    the full space did the retained sectors actually need to reach chemical
+    accuracy" (see _run_K_sector_analysis_for_entry)."""
+    return comb(norb, nelec[0]) * comb(norb, nelec[1])
+
+
 def get_relevance_ranked_K_sectors_values_energies(
     psi: np.ndarray,
     h_linop: Any,
@@ -848,16 +857,21 @@ def _run_K_sector_analysis_for_entry(
     norb: int,
     nelec: tuple[int, int],
     dmrg_energy: float,
-) -> None:
+) -> dict[str, Any] | None:
     """Per-trajectory-entry --K-sector-analysis step, called once per `deco` in
     main()'s trajectory loop: runs the relevance-ranked K-sweep and appends its
-    curve into `state` (a no-op, beyond a warning, if `ranked` is empty)."""
+    curve into `state` (a no-op, beyond a warning, if `ranked` is empty). Also
+    returns a small JSON-ready summary of this entry's own curve -- including
+    the fraction of the full Hilbert space (full_hilbert_space_dimension) the
+    retained sectors needed to reach wherever the sweep stopped -- for the
+    caller to save alongside the ranked-sector output; None if ranked was
+    empty."""
     if not ranked:
         logger.warning(
             f"{deco.num_clusters} clusters: rank_relevant_sectors retained no sectors -- "
             "skipping its K-sector-analysis curve."
         )
-        return
+        return None
 
     import ffsim
     from chemistry import CHEMICAL_PRECISION
@@ -882,15 +896,30 @@ def _run_K_sector_analysis_for_entry(
             psi, h_linop, dmrg_energy, sectors, ranked, CHEMICAL_PRECISION,
         )
     )
+    full_dim = full_hilbert_space_dimension(norb, nelec)
+    retained_dim = retained_dims[-1] if retained_dims else 0
+    dim_fraction = retained_dim / full_dim
     logger.info(
         f"{deco.num_clusters} clusters: K-sector-analysis "
         f"{'reached' if chem_accuracy_reached else 'did not reach'} chemical accuracy "
-        f"(stopped at K={K_values[-1] if K_values else 0})."
+        f"(stopped at K={K_values[-1] if K_values else 0}, retained dim {retained_dim}/{full_dim} "
+        f"= {dim_fraction:.4%} of the full Hilbert space)."
     )
     state.data_label_list.append(f"{deco.num_clusters} clusters")
     state.K_values_list.append(K_values)
     state.energies_list.append(energies)
     state.retained_dims_list.append(retained_dims)
+
+    return {
+        "K_values": K_values,
+        "energies": energies,
+        "retained_dimensions": retained_dims,
+        "chem_accuracy_reached": chem_accuracy_reached,
+        "full_hilbert_dimension": full_dim,
+        "retained_dimension_fraction_curve": [d / full_dim for d in retained_dims],
+        "retained_dimension_at_stop": retained_dim,
+        "retained_dimension_fraction_at_stop": dim_fraction,
+    }
 
 
 def _sector_energy_tier(rdm_data: RDMData) -> int:
@@ -1195,8 +1224,9 @@ def main() -> None:
                 f"(tier {r.energy_tier}) t={r.elec_transfer} dim={r.dimension}"
             )
 
+        k_sector_summary = None
         if args.K_sector_analysis:
-            _run_K_sector_analysis_for_entry(K_sector_state, deco, ranked, norb, nelec, dmrg_energy)
+            k_sector_summary = _run_K_sector_analysis_for_entry(K_sector_state, deco, ranked, norb, nelec, dmrg_energy)
 
         metadata = {
             "molecule": args.molecule, "basis_set": args.basis_set,
@@ -1211,6 +1241,8 @@ def main() -> None:
             "max_cum_dim_to_retain": args.max_cum_dim_to_retain,
         }
         output = {"metadata": metadata, "ranked_sectors": _sector_relevance_to_json(ranked)}
+        if k_sector_summary is not None:
+            output["K_sector_analysis"] = k_sector_summary
         filename = f"sectors_{deco.num_clusters}clusters_{args.cost_function}_{timestamp}_{git_hash}.json"
         filepath = output_dir / filename
         with open(filepath, "w") as f:
