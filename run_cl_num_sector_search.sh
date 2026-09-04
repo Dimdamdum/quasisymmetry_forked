@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=decomp_opt
-#SBATCH --output=logs/cluster_decomp_opt_%A_%a.out
-#SBATCH --error=logs/cluster_decomp_opt_%A_%a.err
+#SBATCH --job-name=cl_num_sector_search
+#SBATCH --output=logs/cl_num_sector_search_%A_%a.out
+#SBATCH --error=logs/cl_num_sector_search_%A_%a.err
 #SBATCH --time=20:00:00
-#SBATCH --array=2
+#SBATCH --array=0-29
 #SBATCH --partition cluster
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
@@ -31,17 +31,35 @@ fi
 
 source quasisym/bin/activate
 
-molecules=( h2o h2o h4_linear lih n2)
-bases=(  6-31g 6-31g 6-311++g 6-31g sto-3g)
-bondlengths=( 0.96 2.00 2.00  2.5 2.5)
-angles=(   104  104   ""     ""      ""    )
+# One array task per FCIDUMP Hamiltonian from
+# Ai_exploration_3/generate_extra_hamiltonians.py's batch (30 total:
+# butadiene, C2, O2, H2O, H6 chain, H6 ring x 5 geometries each). Job
+# metadata is read from that run's own summary JSON instead of being
+# hardcoded here, so this script stays correct if the Hamiltonians are ever
+# regenerated with different geometries/counts. molecule/basis are used by
+# cluster_number_sector_search.py only to label the output/plots directory
+# tree when --fcidump is given; bondlength/angle are not used at all in that
+# mode (still required/accepted positionally) -- all are passed through
+# anyway purely so the launch command and SLURM logs stay self-documenting
+# (e.g. butadiene's torsion angle in place of a literal bond length).
+SUMMARY_JSON="hamiltonians/cluster_number_hamiltonians/generate_extra_hamiltonians_summary.json"
 
-molecule="${molecules[$SLURM_ARRAY_TASK_ID]}"
-basis="${bases[$SLURM_ARRAY_TASK_ID]}"
-bondlength="${bondlengths[$SLURM_ARRAY_TASK_ID]}"
-angle="${angles[$SLURM_ARRAY_TASK_ID]}"
+JOB_FIELDS=$(python -c "
+import json
+with open('$SUMMARY_JSON') as f:
+    data = json.load(f)
+r = data['summary'][$SLURM_ARRAY_TASK_ID]
+fcidump = r.get('fcidump_path') or r['full_space_fcidump_path']
+angle = r.get('bond_angle')
+fields = [str(r['mol_name']), str(r['basis']), str(r['geom_param']),
+          '' if angle is None else str(angle), fcidump]
+print('|'.join(fields))
+")
+IFS='|' read -r molecule basis bondlength angle fcidump <<< "$JOB_FIELDS"
 
-OPT_ARGS=()
+echo "Task $SLURM_ARRAY_TASK_ID: molecule=$molecule basis=$basis bondlength=$bondlength angle=$angle fcidump=$fcidump"
+
+OPT_ARGS=(--fcidump "$fcidump")
 if [[ -n "$angle" ]]; then
     OPT_ARGS+=(--bond-angle "$angle")
 fi
