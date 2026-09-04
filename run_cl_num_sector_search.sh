@@ -50,6 +50,11 @@ with open('$SUMMARY_JSON') as f:
     data = json.load(f)
 r = data['summary'][$SLURM_ARRAY_TASK_ID]
 fcidump = r.get('fcidump_path') or r['full_space_fcidump_path']
+# Paths in the JSON are absolute from wherever it was generated (e.g. a
+# laptop) -- rewrite to repo-root-relative (this script already assumes
+# cwd == repo root, same as the final python invocation below) so it works
+# on any machine/checkout.
+fcidump = 'hamiltonians/' + fcidump.split('hamiltonians/', 1)[1]
 angle = r.get('bond_angle')
 fields = [str(r['mol_name']), str(r['basis']), str(r['geom_param']),
           '' if angle is None else str(angle), fcidump]
