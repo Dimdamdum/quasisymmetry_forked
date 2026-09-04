@@ -64,4 +64,4 @@ if [[ -n "$angle" ]]; then
     OPT_ARGS+=(--bond-angle "$angle")
 fi
 
-python cluster_number_sector_search.py "$molecule" "$basis" "$bondlength" variance "${OPT_ARGS[@]}" --K-sector-analysis --num-sectors-to-retain 40
+python cluster_number_sector_search.py "$molecule" "$basis" "$bondlength" variance "${OPT_ARGS[@]}" --K-sector-analysis --num-sectors-to-retain 40 --force-full-rdms
