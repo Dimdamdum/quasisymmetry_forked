@@ -187,6 +187,82 @@ def build_n2_geometry(bond_length: float):
     ]
 
 
+def build_c2_geometry(bond_length_angstrom: float):
+    return [
+        ("C", (0, 0., 0.)),
+        ("C", (bond_length_angstrom, 0., 0.))
+    ]
+
+
+def build_o2_geometry(bond_length_angstrom: float):
+    return [
+        ("O", (0, 0., 0.)),
+        ("O", (bond_length_angstrom, 0., 0.))
+    ]
+
+
+def build_h6_chain_geometry(h_h_bond_angstrom: float):
+    """
+    Linear H6 chain centered at origin, generalizing build_h4_linear_geometry:
+      H - H - H - H - H - H
+    nearest-neighbor spacing = h_h_bond_angstrom
+    """
+    d = h_h_bond_angstrom
+    coords = [-2.5 * d, -1.5 * d, -0.5 * d, 0.5 * d, 1.5 * d, 2.5 * d]
+    return [("H", (0.0, 0.0, z)) for z in coords]
+
+
+def build_h6_ring_geometry(h_h_bond_angstrom: float):
+    """
+    Regular hexagon of H atoms centered at origin in the xy-plane. For a
+    regular hexagon, circumradius == side length, so placing 6 atoms evenly
+    on a circle of radius h_h_bond_angstrom gives nearest-neighbor spacing
+    exactly h_h_bond_angstrom.
+    """
+    d = h_h_bond_angstrom
+    return [
+        ("H", (d * np.cos(2 * np.pi * k / 6), d * np.sin(2 * np.pi * k / 6), 0.0))
+        for k in range(6)
+    ]
+
+
+def build_butadiene_geometry(
+    torsion_deg: float,
+    d_cc_double: float = 1.34,
+    d_cc_single: float = 1.47,
+    d_ch: float = 1.09,
+    ang_ccc: float = 124.0,
+    ang_hcc: float = 120.0,
+):
+    """
+    1,3-butadiene skeleton (literature bond lengths/angles for the s-trans
+    equilibrium conformer), with the standard C1-C2-C3-C4 backbone dihedral
+    as the free parameter:
+      torsion_deg=180 -> planar s-trans (equilibrium, conjugated)
+      torsion_deg=90  -> twisted, conjugation broken
+      torsion_deg=0   -> planar s-cis
+    Built via a pyscf Z-matrix (handles the rigid rotation of one CH=CH2
+    half about the C2-C3 bond), then re-expressed as the plain (symbol, xyz)
+    list every other builder in this module returns.
+    """
+    zmatrix = f"""
+C
+C 1 {d_cc_double}
+C 2 {d_cc_single} 1 {ang_ccc}
+C 3 {d_cc_double} 2 {ang_ccc} 1 {torsion_deg}
+H 1 {d_ch} 2 {ang_hcc} 3 180.0
+H 1 {d_ch} 2 {ang_hcc} 3 0.0
+H 2 {d_ch} 1 {ang_hcc} 3 180.0
+H 3 {d_ch} 2 {ang_hcc} 4 180.0
+H 4 {d_ch} 3 {ang_hcc} 2 180.0
+H 4 {d_ch} 3 {ang_hcc} 2 0.0
+"""
+    tmp = pyscf.M(atom=zmatrix, basis="sto-3g", verbose=0)
+    coords = tmp.atom_coords(unit="Angstrom")
+    symbols = [tmp.atom_symbol(i) for i in range(tmp.natm)]
+    return list(zip(symbols, [tuple(c) for c in coords]))
+
+
 def get_geometry_and_description(molecule: str, x: float, **kwargs):
     mol = molecule.lower()
 
@@ -213,8 +289,24 @@ def get_geometry_and_description(molecule: str, x: float, **kwargs):
     elif mol == "n2":
         return build_n2_geometry(x), f"N2_bond{x:.4f}"
 
+    elif mol == "c2":
+        return build_c2_geometry(x), f"C2_bond{x:.4f}"
+
+    elif mol == "o2":
+        return build_o2_geometry(x), f"O2_bond{x:.4f}"
+
+    elif mol == "butadiene":
+        return build_butadiene_geometry(x), f"butadiene_torsion{x:.4f}"
+
+    elif mol == "h6_chain":
+        return build_h6_chain_geometry(x), f"H6_chain_d{x:.4f}"
+
+    elif mol == "h6_ring":
+        return build_h6_ring_geometry(x), f"H6_ring_d{x:.4f}"
+
     else:
         raise ValueError(
             f"Unsupported molecule '{molecule}'. "
-            "Choose from: lih, h2o, h4_linear, h4_square, h4_rectangle, h2"
+            "Choose from: lih, h2o, h4_linear, h4_square, h4_rectangle, h2, n2, "
+            "c2, o2, butadiene, h6_chain, h6_ring"
         )
