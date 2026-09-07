@@ -3,8 +3,6 @@
 #SBATCH --output=logs/cl_num_sector_search_%A_%a.out
 #SBATCH --error=logs/cl_num_sector_search_%A_%a.err
 #SBATCH --time=20:00:00
-# One job for each non-Fe2S2 molecule/geometry in
-# plots/cluster_number_examples/sector_search_usual_molecules.
 # 0: h2o 6-31g   bond 0.96, angle 104.0
 # 1: h2o 6-31g   bond 2.00, angle 104.0
 # 2: h2o sto-3g  bond 2.00, angle 104.5
@@ -45,39 +43,33 @@ case "$SLURM_ARRAY_TASK_ID" in
         basis=6-31g
         bondlength=0.96
         bondangle=104.0
-        plots_dir=plots/cluster_number_examples/sector_search_usual_molecules/h2o/6-31g/bond_0_9600/angle_104_0000
         ;;
     1)
         molecule=h2o
         basis=6-31g
         bondlength=2.0
         bondangle=104.0
-        plots_dir=plots/cluster_number_examples/sector_search_usual_molecules/h2o/6-31g/bond_2_0000/angle_104_0000
         ;;
     2)
         molecule=h2o
         basis=sto-3g
         bondlength=2.0
         bondangle=104.5
-        plots_dir=plots/cluster_number_examples/sector_search_usual_molecules/h2o/sto-3g/bond_2_0000/angle_104_5000
         ;;
     3)
         molecule=h4_linear
         basis=6-311++g
         bondlength=2.0
-        plots_dir=plots/cluster_number_examples/sector_search_usual_molecules/h4_linear/6-311++g/bond_2_0000
         ;;
     4)
         molecule=lih
         basis=6-31g
         bondlength=2.5
-        plots_dir=plots/cluster_number_examples/sector_search_usual_molecules/lih/6-31g/bond_2_5000
         ;;
     5)
         molecule=n2
         basis=sto-3g
         bondlength=2.5
-        plots_dir=plots/cluster_number_examples/sector_search_usual_molecules/n2/sto-3g/bond_2_5000
         ;;
     *)
         echo "Unknown SLURM_ARRAY_TASK_ID: $SLURM_ARRAY_TASK_ID" >&2
@@ -87,8 +79,7 @@ esac
 
 python_args=(
     "$molecule" "$basis" "$bondlength" variance
-    --plots-dir "$plots_dir"
-    --K-sector-analysis --num-sectors-to-retain 40 --max-elec-transfer 4
+    --K-sector-analysis --num-sectors-to-retain 40 --max-elec-transfer 2
 )
 
 if [[ -n "${bondangle:-}" ]]; then

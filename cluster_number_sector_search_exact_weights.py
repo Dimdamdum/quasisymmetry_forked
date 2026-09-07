@@ -949,13 +949,13 @@ def _geometry_output_subpath(args: argparse.Namespace) -> Path:
 def _output_dir_for(args: argparse.Namespace) -> Path:
     if args.output_dir is not None:
         return Path(args.output_dir)
-    return Path("outputs_") / "cluster_number_sector_search_exact_weights" / _geometry_output_subpath(args)
+    return Path("outputs_") / "cluster_number_sector_search" / _geometry_output_subpath(args)
 
 
 def _plots_dir_for(args: argparse.Namespace) -> Path:
     if args.plots_dir is not None:
         return Path(args.plots_dir)
-    return Path("plots") / "cluster_number_sector_search_exact_weights" / _geometry_output_subpath(args)
+    return Path("plots") / "cluster_number_sector_search" / _geometry_output_subpath(args)
 
 
 def _sector_relevance_to_json(entries: list[SectorRelevance]) -> list[dict]:
