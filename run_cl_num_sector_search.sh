@@ -3,7 +3,15 @@
 #SBATCH --output=logs/cl_num_sector_search_%A_%a.out
 #SBATCH --error=logs/cl_num_sector_search_%A_%a.err
 #SBATCH --time=20:00:00
-#SBATCH --array=0-29
+# One job for each non-Fe2S2 molecule/geometry in
+# plots/cluster_number_examples/sector_search_usual_molecules.
+# 0: h2o 6-31g   bond 0.96, angle 104.0
+# 1: h2o 6-31g   bond 2.00, angle 104.0
+# 2: h2o sto-3g  bond 2.00, angle 104.5
+# 3: h4_linear 6-311++g bond 2.00
+# 4: lih 6-31g   bond 2.50
+# 5: n2 sto-3g   bond 2.50
+#SBATCH --array=0-5
 #SBATCH --partition cluster
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
@@ -31,42 +39,60 @@ fi
 
 source quasisym/bin/activate
 
-# One array task per FCIDUMP Hamiltonian from
-# Ai_exploration_3/generate_extra_hamiltonians.py's batch (30 total:
-# butadiene, C2, O2, H2O, H6 chain, H6 ring x 5 geometries each). Job
-# metadata is read from that run's own summary JSON instead of being
-# hardcoded here, so this script stays correct if the Hamiltonians are ever
-# regenerated with different geometries/counts. molecule/basis are used by
-# cluster_number_sector_search.py only to label the output/plots directory
-# tree when --fcidump is given; bondlength/angle are not used at all in that
-# mode (still required/accepted positionally) -- all are passed through
-# anyway purely so the launch command and SLURM logs stay self-documenting
-# (e.g. butadiene's torsion angle in place of a literal bond length).
-SUMMARY_JSON="hamiltonians/cluster_number_hamiltonians/generate_extra_hamiltonians_summary.json"
+case "$SLURM_ARRAY_TASK_ID" in
+    0)
+        molecule=h2o
+        basis=6-31g
+        bondlength=0.96
+        bondangle=104.0
+        plots_dir=plots/cluster_number_examples/sector_search_usual_molecules/h2o/6-31g/bond_0_9600/angle_104_0000
+        ;;
+    1)
+        molecule=h2o
+        basis=6-31g
+        bondlength=2.0
+        bondangle=104.0
+        plots_dir=plots/cluster_number_examples/sector_search_usual_molecules/h2o/6-31g/bond_2_0000/angle_104_0000
+        ;;
+    2)
+        molecule=h2o
+        basis=sto-3g
+        bondlength=2.0
+        bondangle=104.5
+        plots_dir=plots/cluster_number_examples/sector_search_usual_molecules/h2o/sto-3g/bond_2_0000/angle_104_5000
+        ;;
+    3)
+        molecule=h4_linear
+        basis=6-311++g
+        bondlength=2.0
+        plots_dir=plots/cluster_number_examples/sector_search_usual_molecules/h4_linear/6-311++g/bond_2_0000
+        ;;
+    4)
+        molecule=lih
+        basis=6-31g
+        bondlength=2.5
+        plots_dir=plots/cluster_number_examples/sector_search_usual_molecules/lih/6-31g/bond_2_5000
+        ;;
+    5)
+        molecule=n2
+        basis=sto-3g
+        bondlength=2.5
+        plots_dir=plots/cluster_number_examples/sector_search_usual_molecules/n2/sto-3g/bond_2_5000
+        ;;
+    *)
+        echo "Unknown SLURM_ARRAY_TASK_ID: $SLURM_ARRAY_TASK_ID" >&2
+        exit 1
+        ;;
+esac
 
-JOB_FIELDS=$(python -c "
-import json
-with open('$SUMMARY_JSON') as f:
-    data = json.load(f)
-r = data['summary'][$SLURM_ARRAY_TASK_ID]
-fcidump = r.get('fcidump_path') or r['full_space_fcidump_path']
-# Paths in the JSON are absolute from wherever it was generated (e.g. a
-# laptop) -- rewrite to repo-root-relative (this script already assumes
-# cwd == repo root, same as the final python invocation below) so it works
-# on any machine/checkout.
-fcidump = 'hamiltonians/' + fcidump.split('hamiltonians/', 1)[1]
-angle = r.get('bond_angle')
-fields = [str(r['mol_name']), str(r['basis']), str(r['geom_param']),
-          '' if angle is None else str(angle), fcidump]
-print('|'.join(fields))
-")
-IFS='|' read -r molecule basis bondlength angle fcidump <<< "$JOB_FIELDS"
+python_args=(
+    "$molecule" "$basis" "$bondlength" variance
+    --plots-dir "$plots_dir"
+    --K-sector-analysis --num-sectors-to-retain 40 --max-elec-transfer 4
+)
 
-echo "Task $SLURM_ARRAY_TASK_ID: molecule=$molecule basis=$basis bondlength=$bondlength angle=$angle fcidump=$fcidump"
-
-OPT_ARGS=(--fcidump "$fcidump")
-if [[ -n "$angle" ]]; then
-    OPT_ARGS+=(--bond-angle "$angle")
+if [[ -n "${bondangle:-}" ]]; then
+    python_args+=(--bond-angle "$bondangle")
 fi
 
-python cluster_number_sector_search.py "$molecule" "$basis" "$bondlength" variance "${OPT_ARGS[@]}" --K-sector-analysis --num-sectors-to-retain 40 --force-full-rdms
+python cluster_number_sector_search_exact_weights.py "${python_args[@]}"
