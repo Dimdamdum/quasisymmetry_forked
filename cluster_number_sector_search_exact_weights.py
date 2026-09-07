@@ -890,7 +890,13 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fiedler-reorder", action="store_true")
 
     # Polish
-    parser.add_argument("--no-polish", action="store_true")
+    parser.add_argument(
+        "--final-polish", action="store_true",
+        help="Run a full joint-rotation reoptimization (cluster_number_decomposition_optimization.py's "
+        "own polish_decomposition) on each trajectory entry before ranking sectors. Off by default here "
+        "-- unlike cluster_number_decomposition_optimization.py, which polishes unless --no-polish is "
+        "passed -- since this module's own trajectory otherwise stays the raw, cheap beam-search output.",
+    )
     parser.add_argument("--polish-maxiter", type=int, default=500)
 
     # Sector search (new)
@@ -1023,14 +1029,16 @@ def main() -> None:
     )
     trajectory = run_decomposition_optimizer(cost_function_constructor, beam_rdm_data, opt_config, initial_bases)
 
-    if not args.no_polish:
+    if args.final_polish:
         # Full joint-rotation reoptimization per fixed partition, exactly as
         # cluster_number_decomposition_optimization.py's own main() does --
         # rdm_data (not beam_rdm_data) since polishing runs once per
         # trajectory entry after the beam search entirely, not per-split, so
         # the O(norb^6)/O(norb^8) rdm3/rdm4 cost beam_rdm_data-stripping
         # avoids is not a concern here (and cost_function_constructor may
-        # need them regardless, e.g. for "commutator").
+        # need them regardless, e.g. for "commutator"). Off by default here
+        # (opt in with --final-polish), unlike cluster_number_decomposition_
+        # optimization.py's own --no-polish (on by default there).
         logger.info("Polishing each trajectory entry with a full joint-rotation reoptimization...")
         trajectory = [
             polish_decomposition(deco, rdm_data, cost_function_constructor, maxiter=args.polish_maxiter)
@@ -1087,7 +1095,7 @@ def main() -> None:
             "n_td_steps": args.n_td_steps,
             "num_sectors_to_retain": args.num_sectors_to_retain,
             "max_cum_dim_to_retain": args.max_cum_dim_to_retain,
-            "polished": not args.no_polish,
+            "polished": args.final_polish,
         }
         output = {"metadata": metadata, "ranked_sectors": _sector_relevance_to_json(ranked)}
         if k_sector_summary is not None:
